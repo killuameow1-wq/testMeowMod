@@ -1,8 +1,6 @@
--- // MEOWMOD | V1.8 // Full replace of V1.7. Fixes only, no new features.
--- Fixes: prediction + target score weight + real switch cooldown + cached aim pos
---        tp double offset + capture team check + real TP_Delay
---        bypass human hit-rate + mt nil guard + namecall restore on unload
---        lazy bones + LocalAlive state + mobile offscreen margin + config dead keys
+-- // MEOWMOD | V1.8.1 // V1.8 + silent aim camera-drift filter
+-- V1.8.1: __namecall Raycast filter — skip camera rays + long-range rays
+--         so CameraModule and Humanoid move no longer get hijacked.
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -166,7 +164,7 @@ local TitleLabel = Instance.new("TextLabel")
 TitleLabel.Size = UDim2.new(1, -300, 1, 0)
 TitleLabel.Position = UDim2.new(0, 20, 0, 0)
 TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text = "MEOW | V1.8"
+TitleLabel.Text = "MEOW | V1.8.1"
 TitleLabel.TextColor3 = Config.ColorNeon
 TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
 TitleLabel.Font = Enum.Font.GothamBlack
@@ -648,7 +646,6 @@ local function TPCapture()
                     local bad = path:find("spawn") or path:find("barracks")
                         or path:find("oil") or path:find("storage") or path:find("tank")
                         or path:find("menu") or path:find("exchang") or path:find("shop")
-                    -- enemy base flag: reject if path mentions an enemy team name
                     if not bad and myTeam ~= "" then
                         local teams = {"red","blue","green","yellow"}
                         for _, tn in ipairs(teams) do
@@ -958,7 +955,6 @@ CopyBtn.MouseButton1Click:Connect(function()
 end)
 
 -- ═══════════════ UNLOAD ═══════════════
--- Saved namecall state for clean restore on unload
 local __saved_mt = nil
 local __saved_nc = nil
 
@@ -1050,7 +1046,6 @@ end
 
 local ESP_FAILS = {}
 
--- lazy bone creation: only when skeleton is enabled
 local function EnsureBones(d)
     if d.BonesReady then return end
     for i = 1, #BONE_PAIRS do
@@ -1155,7 +1150,6 @@ local function GetScreenBox(char, hrp)
 end
 
 local LocalAlive = false
-local LocalDeadLogged = false
 
 local function RenderESP()
     if not Config.ESP then
@@ -1178,7 +1172,6 @@ local function RenderESP()
     local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
     local myPos = myHrp and myHrp.Position
 
-    -- mobile-aware offscreen margin
     local vp = Camera.ViewportSize
     local offMargin = (vp.X < 800 and 70) or 40
 
@@ -1419,20 +1412,10 @@ local function IsVisible(head)
     rp.FilterDescendantsInstances = {LP.Character, head.Parent}
     rp.FilterType = Enum.RaycastFilterType.Exclude
     local camPos = Camera.CFrame.Position
-    -- if camera sits inside the head, push it back a bit for a sane ray
     if (camPos - head.Position).Magnitude < 1.5 then
         camPos = Camera.CFrame.Position - Camera.CFrame.LookVector * 2
     end
     return WS:Raycast(camPos, head.Position - camPos, rp) == nil
-end
-
-local function PredictPos(head, hrp)
-    local mult = Config.PredictionMultiplier or 1.0
-    if mult <= 1.0 then return head.Position end
-    local vel = Vector3.zero
-    pcall(function() vel = hrp.AssemblyLinearVelocity end)
-    local dt = (head.Position - Camera.CFrame.Position).Magnitude / 1000
-    return head.Position + vel * (dt * mult)
 end
 
 local function IsInFov(head, mPos, currentFov)
@@ -1528,7 +1511,7 @@ AddConn(UIS.InputEnded:Connect(function(inp, gp)
         or inp.UserInputType == Enum.UserInputType.Touch) then isShooting = false end
 end))
 
--- save namecall for clean restore; guard against nil metatable
+-- v1.8.1: namecall filter — only weapon rays get redirected
 pcall(function()
     local mt = getrawmetatable(game)
     if not mt then return end
@@ -1542,42 +1525,58 @@ pcall(function()
             if m == "Raycast" then
                 local a = {...}
                 if typeof(a[1]) == "Vector3" then
-                    local tPos = silentTarget.Position
-                    -- Bypass v14: human hit-rate — occasionally aim at torso, small jitter
-                    if Config.Bypass then
-                        local r = math.random()
-                        if not Config.Headshot and r < 0.55 then
-                            local ch = silentTarget.Parent
-                            local torso = ch and (ch:FindFirstChild("UpperTorso") or ch:FindFirstChild("Torso"))
-                            if torso then tPos = torso.Position end
+                    local origin = a[1]
+                    local camPos = Camera.CFrame.Position
+                    local camToRay = (origin - camPos).Magnitude
+                    local camToTarget = (silentTarget.Position - camPos).Magnitude
+                    -- skip: camera rays (start at camera) and long-range rays (movement/UI)
+                    local isCameraRay = camToRay < 2
+                    local isTooFar = camToRay > camToTarget + 50
+                    if not isCameraRay and not isTooFar then
+                        local tPos = silentTarget.Position
+                        if Config.Bypass then
+                            local r = math.random()
+                            if not Config.Headshot and r < 0.55 then
+                                local ch = silentTarget.Parent
+                                local torso = ch and (ch:FindFirstChild("UpperTorso") or ch:FindFirstChild("Torso"))
+                                if torso then tPos = torso.Position end
+                            end
+                            tPos = tPos + Vector3.new(
+                                (math.random() - 0.5) * 0.08,
+                                (math.random() - 0.5) * 0.08,
+                                (math.random() - 0.5) * 0.08
+                            )
                         end
-                        tPos = tPos + Vector3.new(
-                            (math.random() - 0.5) * 0.08,
-                            (math.random() - 0.5) * 0.08,
-                            (math.random() - 0.5) * 0.08
-                        )
+                        a[2] = tPos - origin
                     end
-                    a[2] = tPos - a[1]
                 end
                 return oldNC(self, unpack(a))
             elseif m == "FindPartOnRay" or m == "FindPartOnRayWithIgnoreList" then
                 local a = {...}
                 if typeof(a[1]) == "Ray" then
-                    local tPos = silentTarget.Position
-                    if Config.Bypass then
-                        local r = math.random()
-                        if not Config.Headshot and r < 0.55 then
-                            local ch = silentTarget.Parent
-                            local torso = ch and (ch:FindFirstChild("UpperTorso") or ch:FindFirstChild("Torso"))
-                            if torso then tPos = torso.Position end
+                    local origin = a[1].Origin
+                    local camPos = Camera.CFrame.Position
+                    local camToRay = (origin - camPos).Magnitude
+                    local camToTarget = (silentTarget.Position - camPos).Magnitude
+                    local isCameraRay = camToRay < 2
+                    local isTooFar = camToRay > camToTarget + 50
+                    if not isCameraRay and not isTooFar then
+                        local tPos = silentTarget.Position
+                        if Config.Bypass then
+                            local r = math.random()
+                            if not Config.Headshot and r < 0.55 then
+                                local ch = silentTarget.Parent
+                                local torso = ch and (ch:FindFirstChild("UpperTorso") or ch:FindFirstChild("Torso"))
+                                if torso then tPos = torso.Position end
+                            end
+                            tPos = tPos + Vector3.new(
+                                (math.random() - 0.5) * 0.08,
+                                (math.random() - 0.5) * 0.08,
+                                (math.random() - 0.5) * 0.08
+                            )
                         end
-                        tPos = tPos + Vector3.new(
-                            (math.random() - 0.5) * 0.08,
-                            (math.random() - 0.5) * 0.08,
-                            (math.random() - 0.5) * 0.08
-                        )
+                        a[1] = Ray.new(origin, tPos - origin)
                     end
-                    a[1] = Ray.new(a[1].Origin, tPos - a[1].Origin)
                 end
                 return oldNC(self, unpack(a))
             end
@@ -1603,7 +1602,6 @@ end
 local function TickLogic(dt)
     UpdateFps()
 
-    -- central source of truth for local alive state
     local myChar = LP.Character
     local myHum = myChar and myChar:FindFirstChildOfClass("Humanoid")
     LocalAlive = myHum ~= nil and myHum.Health > 0
@@ -1621,7 +1619,6 @@ local function TickLogic(dt)
         silentTarget = tgt
         silentHrp = hrp
         silentActive = tgt ~= nil
-        -- cache position so late ticks don't read a destroyed part
         if tgt and tgt.Parent then
             LastAimPos = tgt.Position
         end
