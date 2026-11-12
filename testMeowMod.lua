@@ -1,6 +1,6 @@
--- // MEOWMOD | V1.8.1 // V1.8 + silent aim camera-drift filter
--- V1.8.1: __namecall Raycast filter — skip camera rays + long-range rays
---         so CameraModule and Humanoid move no longer get hijacked.
+-- // MEOWMOD | V1.8.2 // Fix: camera drift when silent aim is active
+-- Root cause: __namecall was rewriting rays from Camera/Mouse/Move controllers.
+-- Solution: strict source filter — only rays from Character/Tool get rewritten.
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -164,7 +164,7 @@ local TitleLabel = Instance.new("TextLabel")
 TitleLabel.Size = UDim2.new(1, -300, 1, 0)
 TitleLabel.Position = UDim2.new(0, 20, 0, 0)
 TitleLabel.BackgroundTransparency = 1
-TitleLabel.Text = "MEOW | V1.8.1"
+TitleLabel.Text = "MEOW | V1.8.2"
 TitleLabel.TextColor3 = Config.ColorNeon
 TitleLabel.TextXAlignment = Enum.TextXAlignment.Left
 TitleLabel.Font = Enum.Font.GothamBlack
@@ -1511,7 +1511,7 @@ AddConn(UIS.InputEnded:Connect(function(inp, gp)
         or inp.UserInputType == Enum.UserInputType.Touch) then isShooting = false end
 end))
 
--- v1.8.1: namecall filter — only weapon rays get redirected
+-- v1.8.2: strict source filter — only rays from Character or Tool are rewritten
 pcall(function()
     local mt = getrawmetatable(game)
     if not mt then return end
@@ -1522,17 +1522,46 @@ pcall(function()
     mt.__namecall = newcclosure(function(self, ...)
         if silentActive and silentTarget and silentTarget.Parent then
             local m = getnamecallmethod()
-            if m == "Raycast" then
+            if m == "Raycast" or m == "FindPartOnRay" or m == "FindPartOnRayWithIgnoreList" then
                 local a = {...}
-                if typeof(a[1]) == "Vector3" then
-                    local origin = a[1]
-                    local camPos = Camera.CFrame.Position
-                    local camToRay = (origin - camPos).Magnitude
-                    local camToTarget = (silentTarget.Position - camPos).Magnitude
-                    -- skip: camera rays (start at camera) and long-range rays (movement/UI)
-                    local isCameraRay = camToRay < 2
-                    local isTooFar = camToRay > camToTarget + 50
-                    if not isCameraRay and not isTooFar then
+                local origin
+                if m == "Raycast" and typeof(a[1]) == "Vector3" then
+                    origin = a[1]
+                elseif typeof(a[1]) == "Ray" then
+                    origin = a[1].Origin
+                end
+
+                if origin then
+                    local validSource = false
+                    local myChar = LP.Character
+                    if myChar then
+                        local hrp = myChar:FindFirstChild("HumanoidRootPart")
+                        local head = myChar:FindFirstChild("Head")
+                        local camPos = Camera.CFrame.Position
+                        
+                        -- 1. Check if origin is close to camera (usually camera ray)
+                        local distToCam = (origin - camPos).Magnitude
+                        if distToCam < 2 then
+                            validSource = false -- definitely camera ray, ignore
+                        else
+                            -- 2. Check if origin is from our character or tool
+                            if hrp and (origin - hrp.Position).Magnitude < 15 then
+                                validSource = true
+                            elseif head and (origin - head.Position).Magnitude < 10 then
+                                validSource = true
+                            else
+                                local equippedTool = myChar:FindFirstChildOfClass("Tool")
+                                if equippedTool then
+                                    local handle = equippedTool:FindFirstChild("Handle")
+                                    if handle and (origin - handle.Position).Magnitude < 15 then
+                                        validSource = true
+                                    end
+                                end
+                            end
+                        end
+                    end
+
+                    if validSource then
                         local tPos = silentTarget.Position
                         if Config.Bypass then
                             local r = math.random()
@@ -1547,38 +1576,20 @@ pcall(function()
                                 (math.random() - 0.5) * 0.08
                             )
                         end
-                        a[2] = tPos - origin
-                    end
-                end
-                return oldNC(self, unpack(a))
-            elseif m == "FindPartOnRay" or m == "FindPartOnRayWithIgnoreList" then
-                local a = {...}
-                if typeof(a[1]) == "Ray" then
-                    local origin = a[1].Origin
-                    local camPos = Camera.CFrame.Position
-                    local camToRay = (origin - camPos).Magnitude
-                    local camToTarget = (silentTarget.Position - camPos).Magnitude
-                    local isCameraRay = camToRay < 2
-                    local isTooFar = camToRay > camToTarget + 50
-                    if not isCameraRay and not isTooFar then
-                        local tPos = silentTarget.Position
-                        if Config.Bypass then
-                            local r = math.random()
-                            if not Config.Headshot and r < 0.55 then
-                                local ch = silentTarget.Parent
-                                local torso = ch and (ch:FindFirstChild("UpperTorso") or ch:FindFirstChild("Torso"))
-                                if torso then tPos = torso.Position end
-                            end
-                            tPos = tPos + Vector3.new(
-                                (math.random() - 0.5) * 0.08,
-                                (math.random() - 0.5) * 0.08,
-                                (math.random() - 0.5) * 0.08
-                            )
+                        
+                        if m == "Raycast" then
+                            a[2] = tPos - origin
+                        else
+                            a[1] = Ray.new(origin, tPos - origin)
                         end
-                        a[1] = Ray.new(origin, tPos - origin)
                     end
                 end
-                return oldNC(self, unpack(a))
+
+                if m == "Raycast" then
+                    return oldNC(self, unpack(a))
+                else
+                    return oldNC(self, unpack(a))
+                end
             end
         end
         return oldNC(self, ...)
