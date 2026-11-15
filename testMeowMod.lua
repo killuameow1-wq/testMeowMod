@@ -1031,3 +1031,286 @@ CreateToggle(Pages["ESP"], " - Distance", "V_ESP_Dist", nil)
 CreateSlider(Pages["ESP"], "Vehicle Max Dist", 100, 5000, "V_ESP_MaxDist", nil)
 
 print("[MeowMod] Part 2 Loaded — Aim & ESP ready.")
+
+-- ═══════════════════════════════════════════════════════════
+--  PART 3: MOVEMENT, FLY JOYSTICK, AIM BUTTON
+-- ═══════════════════════════════════════════════════════════
+
+-- 1. БАЗОВЫЕ ФУНКЦИИ ДВИЖЕНИЯ
+local function ApplySpeed()
+    local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+    if hum then 
+        hum.WalkSpeed = Config.SpeedOn and Config.SpeedValue or 16 
+    end
+end
+
+local function ApplyJumpPower()
+    local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+    if hum then
+        pcall(function() hum.UseJumpPower = true end)
+        hum.JumpPower = Config.JumpPowerOn and Config.JumpPowerValue or 50
+    end
+end
+
+-- Infinite Jump
+local InfJumpConn = nil
+local function ApplyInfJump()
+    if Config.InfJump then
+        if not InfJumpConn then
+            InfJumpConn = UIS.JumpRequest:Connect(function()
+                local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+                if hum then 
+                    hum:ChangeState(Enum.HumanoidStateType.Jumping) 
+                end
+            end)
+        end
+    else
+        if InfJumpConn then InfJumpConn:Disconnect() InfJumpConn = nil end
+    end
+end
+
+-- Noclip
+local NoclipConn = nil
+local function ApplyNoclip()
+    if Config.Noclip then
+        if not NoclipConn then
+            NoclipConn = RunService.Stepped:Connect(function()
+                local char = LP.Character
+                if char then 
+                    for _, p in ipairs(char:GetDescendants()) do 
+                        if p:IsA("BasePart") and p.CanCollide then 
+                            p.CanCollide = false 
+                        end 
+                    end 
+                end
+            end)
+        end
+    else
+        if NoclipConn then NoclipConn:Disconnect() NoclipConn = nil end
+    end
+end
+
+table.insert(MM.Connections, { 
+    Disconnect = function() 
+        if InfJumpConn then InfJumpConn:Disconnect() end 
+        if NoclipConn then NoclipConn:Disconnect() end 
+    end 
+})
+
+-- Применяем при респавне
+LP.CharacterAdded:Connect(function()
+    task.wait(1)
+    ApplySpeed()
+    ApplyJumpPower()
+end)
+
+-- 2. FLY (Полёт с анти-падением)
+local FlyState = { dir = Vector3.zero, up = 0 }
+local FlyConn, FlyBodyVel, FlyGyro, FlyAntiFallConn = nil, nil, nil, nil
+local FlyJoyUI = nil
+
+local function ApplyFly()
+    local char = LP.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    local hum = char and char:FindFirstChildOfClass("Humanoid")
+    
+    if Config.Fly then
+        if not hrp or not hum then return end
+        
+        hum.PlatformStand = true
+        hrp.CustomPhysicalProperties = PhysicalProperties.new(0.01, 0.01, 0.01, 0, 0)
+        hrp.CanCollide = false
+        
+        if not FlyBodyVel then
+            FlyBodyVel = Instance.new("BodyVelocity")
+            FlyBodyVel.MaxForce = Vector3.new(math.huge, math.huge, math.huge)
+            FlyBodyVel.Velocity = Vector3.zero
+            FlyBodyVel.Parent = hrp
+        end
+        
+        if not FlyGyro then
+            FlyGyro = Instance.new("BodyGyro")
+            FlyGyro.MaxTorque = Vector3.new(math.huge, math.huge, math.huge)
+            FlyGyro.P = 10000
+            FlyGyro.D = 500
+            FlyGyro.Parent = hrp
+        end
+        
+        if not FlyConn then
+            FlyConn = RunService.Heartbeat:Connect(function()
+                if not Config.Fly then return end
+                local h = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+                if not h or not FlyBodyVel then return end
+                
+                FlyGyro.CFrame = Camera.CFrame
+                local dir = FlyState.dir
+                local moveVel = Vector3.zero
+                
+                if dir.Magnitude > 0 then 
+                    moveVel = (Camera.CFrame.LookVector * dir.Z + Camera.CFrame.RightVector * dir.X).Unit * Config.FlySpeed 
+                end
+                if FlyState.up ~= 0 then 
+                    moveVel = moveVel + Vector3.new(0, FlyState.up * Config.FlySpeed, 0) 
+                end
+                
+                FlyBodyVel.Velocity = moveVel
+            end)
+        end
+        
+        if not FlyAntiFallConn then
+            FlyAntiFallConn = RunService.Stepped:Connect(function()
+                if not Config.Fly then return end
+                local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+                if hum then hum.Health = hum.MaxHealth end
+                local h = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+                if h and h.Position.Y < -500 then 
+                    h.CFrame = CFrame.new(0, 50, 0) 
+                end
+            end)
+        end
+    else
+        if FlyBodyVel then pcall(function() FlyBodyVel:Destroy() end) FlyBodyVel = nil end
+        if FlyGyro then pcall(function() FlyGyro:Destroy() end) FlyGyro = nil end
+        if FlyConn then FlyConn:Disconnect() FlyConn = nil end
+        if FlyAntiFallConn then FlyAntiFallConn:Disconnect() FlyAntiFallConn = nil end
+        
+        if hum then
+            hum.PlatformStand = false
+            if hrp then 
+                hrp.CustomPhysicalProperties = nil
+                hrp.CanCollide = true 
+            end
+        end
+    end
+end
+
+table.insert(MM.Connections, { 
+    Disconnect = function() 
+        if FlyBodyVel then FlyBodyVel:Destroy() end 
+        if FlyGyro then FlyGyro:Destroy() end 
+        if FlyConn then FlyConn:Disconnect() end 
+        if FlyAntiFallConn then FlyAntiFallConn:Disconnect() end 
+    end 
+})
+
+-- 3. МОБИЛЬНЫЙ ДЖОЙСТИК ДЛЯ ПОЛЁТА
+local function BuildFlyJoystick(show)
+    if show then
+        if FlyJoyUI and FlyJoyUI.container then 
+            FlyJoyUI.container.Visible = true 
+            return 
+        end
+        
+        local container = Instance.new("Frame")
+        container.Name = "FlyJoy" 
+        container.Size = UDim2.new(0, 200, 0, 200)
+        container.Position = UDim2.new(1, -220, 0.5, -100) 
+        container.BackgroundTransparency = 1
+        container.ZIndex = 100 
+        container.Parent = ScreenGui
+        
+        FlyJoyUI = {container = container}
+        
+        local function makeBtn(text, pos, cb)
+            local b = Instance.new("TextButton")
+            b.Size = UDim2.new(0, 60, 0, 60) 
+            b.Position = pos
+            b.BackgroundColor3 = THEME.Surface 
+            b.BackgroundTransparency = 0.2
+            b.Text = text 
+            b.TextColor3 = THEME.Accent 
+            b.Font = Enum.Font.GothamBold
+            b.TextSize = 20 
+            b.BorderSizePixel = 0 
+            b.ZIndex = 101 
+            b.Parent = container
+            corner(b, 12) 
+            stroke(b, THEME.Accent, 1, 0.5)
+            
+            b.MouseButton1Down:Connect(function() cb(true) end)
+            b.MouseButton1Up:Connect(function() cb(false) end)
+            b.MouseLeave:Connect(function() cb(false) end)
+            return b
+        end
+        
+        makeBtn("W", UDim2.new(0, 70, 0, 0), function(on) FlyState.dir = Vector3.new(FlyState.dir.X, FlyState.dir.Y, on and 1 or 0) end)
+        makeBtn("S", UDim2.new(0, 70, 0, 140), function(on) FlyState.dir = Vector3.new(FlyState.dir.X, FlyState.dir.Y, on and -1 or 0) end)
+        makeBtn("A", UDim2.new(0, 0, 0, 70), function(on) FlyState.dir = Vector3.new(on and -1 or 0, FlyState.dir.Y, FlyState.dir.Z) end)
+        makeBtn("D", UDim2.new(0, 140, 0, 70), function(on) FlyState.dir = Vector3.new(on and 1 or 0, FlyState.dir.Y, FlyState.dir.Z) end)
+        makeBtn("↑", UDim2.new(0, 70, 0, 70), function(on) FlyState.up = on and 1 or 0 end)
+        
+        local down = Instance.new("TextButton")
+        down.Size = UDim2.new(0, 60, 0, 60) 
+        down.Position = UDim2.new(0, 200, 0, 70)
+        down.BackgroundColor3 = THEME.Surface 
+        down.BackgroundTransparency = 0.2
+        down.Text = "↓" 
+        down.TextColor3 = THEME.Accent 
+        down.Font = Enum.Font.GothamBold
+        down.TextSize = 20 
+        down.BorderSizePixel = 0 
+        down.ZIndex = 101 
+        down.Parent = container
+        corner(down, 12) 
+        stroke(down, THEME.Accent, 1, 0.5)
+        
+        down.MouseButton1Down:Connect(function() FlyState.up = -1 end)
+        down.MouseButton1Up:Connect(function() FlyState.up = 0 end)
+        down.MouseLeave:Connect(function() FlyState.up = 0 end)
+    else
+        if FlyJoyUI and FlyJoyUI.container then 
+            FlyJoyUI.container.Visible = false 
+        end
+    end
+end
+
+-- 4. UI BINDINGS (Movement)
+CreateToggle(Pages["Movement"], "Speed Hack", "SpeedOn", function() ApplySpeed() end)
+CreateSlider(Pages["Movement"], "Speed Value", 16, 200, "SpeedValue", function() 
+    if Config.SpeedOn then ApplySpeed() end 
+end)
+
+CreateToggle(Pages["Movement"], "Jump Power On", "JumpPowerOn", function() ApplyJumpPower() end)
+CreateSlider(Pages["Movement"], "Jump Power", 50, 500, "JumpPowerValue", function() 
+    if Config.JumpPowerOn then ApplyJumpPower() end 
+end)
+
+CreateToggle(Pages["Movement"], "Infinite Jump", "InfJump", function(v) 
+    ApplyInfJump() 
+end)
+
+CreateToggle(Pages["Movement"], "Noclip", "Noclip", function(v) 
+    ApplyNoclip() 
+end)
+
+CreateToggle(Pages["Movement"], "Fly (mobile joystick)", "Fly", function(v)
+    ApplyFly()
+    BuildFlyJoystick(v)
+end)
+CreateSlider(Pages["Movement"], "Fly Speed", 1, 500, "FlySpeed", nil)
+
+-- 5. ЭКРАННАЯ КНОПКА AIM (Для визуального аима)
+local AimBtn = Instance.new("TextButton")
+AimBtn.Size = UDim2.new(0, 60, 0, 60)
+AimBtn.Position = UDim2.new(1, -80, 0.7, 0)
+AimBtn.BackgroundColor3 = THEME.Surface
+AimBtn.BackgroundTransparency = 0.2
+AimBtn.Text = "AIM"
+AimBtn.TextColor3 = THEME.Accent
+AimBtn.Font = Enum.Font.GothamBold
+AimBtn.TextSize = 16
+AimBtn.BorderSizePixel = 0
+AimBtn.ZIndex = 101
+AimBtn.Parent = ScreenGui
+corner(AimBtn, 30) 
+stroke(AimBtn, THEME.Accent, 1.5, 0.4)
+
+AimBtn.MouseButton1Down:Connect(function() MM.SetVisualAiming(true) end)
+AimBtn.MouseButton1Up:Connect(function() MM.SetVisualAiming(false) end)
+AimBtn.MouseLeave:Connect(function() MM.SetVisualAiming(false) end)
+
+-- Применяем настройки при старте
+ApplySpeed()
+ApplyJumpPower()
+
+print("[MeowMod] Part 3 Loaded — Movement, Fly Joystick, Aim Button ready.")
