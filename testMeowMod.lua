@@ -1934,3 +1934,197 @@ CreateToggle(Pages["Visuals"], "Weapon FX (Fire+Trail)", false, function(v)
 end)
 
 print("[MeowMod] Part 6 Loaded — Visuals, Post-FX, Skybox ready.")
+
+-- ═══════════════════════════════════════════════════════════
+--  PART 7: ACTIONS, BROWSER, SERVER HOP
+-- ═══════════════════════════════════════════════════════════
+
+-- 1. ДЕЙСТВИЯ С ИГРОКАМИ
+local function GetNearestPlayer()
+    local myHrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+    if not myHrp then return nil end
+    local best, bestD = nil, math.huge
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= LP and p.Character then
+            local hrp = p.Character:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                local d = (myHrp.Position - hrp.Position).Magnitude
+                if d < bestD then bestD = d best = p end
+            end
+        end
+    end
+    return best
+end
+
+-- Урон (универсальный, если сервер не защищает Health)
+CreateButton(Pages["Players"], "Action: Damage Nearest (10)", function()
+    local p = GetNearestPlayer()
+    if p and p.Character then
+        local hum = p.Character:FindFirstChildOfClass("Humanoid")
+        if hum then hum:TakeDamage(10) end
+    end
+end)
+
+-- Заморозка (Anchored = true)
+local frozenPlayers = {}
+CreateButton(Pages["Players"], "Action: Freeze Nearest", function()
+    local p = GetNearestPlayer()
+    if p and p.Character then
+        local hrp = p.Character:FindFirstChild("HumanoidRootPart")
+        if hrp and not frozenPlayers[p] then
+            frozenPlayers[p] = hrp.Anchored
+            hrp.Anchored = true
+            print("[MeowMod] Frozen: " .. p.Name)
+        end
+    end
+end)
+
+CreateButton(Pages["Players"], "Action: Unfreeze All", function()
+    for p, state in pairs(frozenPlayers) do
+        if p.Character then
+            local hrp = p.Character:FindFirstChild("HumanoidRootPart")
+            if hrp then hrp.Anchored = state end
+        end
+    end
+    frozenPlayers = {}
+    print("[MeowMod] All unfrozen.")
+end)
+
+-- Взрыв (Explosion)
+CreateButton(Pages["Players"], "Action: Explode Nearest", function()
+    local p = GetNearestPlayer()
+    if p and p.Character then
+        local hrp = p.Character:FindFirstChild("HumanoidRootPart")
+        if hrp then
+            local exp = Instance.new("Explosion")
+            exp.Position = hrp.Position
+            exp.BlastRadius = 10
+            exp.BlastPressure = 5000
+            exp.DestroyJointRadiusPercent = 0
+            exp.Parent = WS
+            print("[MeowMod] Exploded: " .. p.Name)
+        end
+    end
+end)
+
+-- 2. INSTANCE BROWSER (Поиск объектов)
+local function ScanWorld(keyword)
+    print("🔍 Scanning for: " .. keyword)
+    local found = 0
+    for _, inst in ipairs(WS:GetDescendants()) do
+        if inst.Name:lower():find(keyword:lower()) then
+            found = found + 1
+            local pos = "?"
+            if inst:IsA("BasePart") then
+                pos = tostring(math.floor(inst.Position.X)) .. ", " .. tostring(math.floor(inst.Position.Y)) .. ", " .. tostring(math.floor(inst.Position.Z))
+            end
+            print("📍 " .. inst.Name .. " [" .. inst.ClassName .. "] @ " .. pos)
+        end
+    end
+    if found == 0 then
+        print("❌ Nothing found.")
+    else
+        print("✅ Found " .. found .. " objects.")
+    end
+end
+
+local scanBox
+do
+    local f = Instance.new("Frame")
+    f.Size = UDim2.new(1, 0, 0, 60)
+    f.BackgroundColor3 = THEME.Surface
+    f.BorderSizePixel = 0
+    f.Parent = Pages["World"]
+    corner(f, 8)
+    
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -20, 0, 20)
+    lbl.Position = UDim2.new(0, 14, 0, 6)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = "Scan World (Keyword)"
+    lbl.TextColor3 = THEME.Text
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Font = Enum.Font.GothamMedium
+    lbl.TextSize = 13
+    lbl.Parent = f
+    
+    local box = Instance.new("TextBox")
+    box.Size = UDim2.new(1, -28, 0, 26)
+    box.Position = UDim2.new(0, 14, 0, 26)
+    box.BackgroundColor3 = Color3.fromRGB(12, 12, 18)
+    box.BorderSizePixel = 0
+    box.Text = "Crate"
+    box.PlaceholderText = "Search term..."
+    box.PlaceholderColor3 = THEME.Muted
+    box.TextColor3 = THEME.Text
+    box.Font = Enum.Font.Code
+    box.TextSize = 13
+    box.ClearTextOnFocus = false
+    box.Parent = f
+    corner(box, 6)
+    scanBox = box
+end
+
+CreateButton(Pages["World"], "Scan in Console", function()
+    ScanWorld(scanBox.Text)
+end)
+
+CreateButton(Pages["World"], "TP to Nearest (Keyword)", function()
+    local myHrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+    if not myHrp then return end
+    local kw = scanBox.Text:lower()
+    local best, bestD = nil, math.huge
+    for _, inst in ipairs(WS:GetDescendants()) do
+        if inst.Name:lower():find(kw) and inst:IsA("BasePart") then
+            local d = (myHrp.Position - inst.Position).Magnitude
+            if d < bestD then bestD = d best = inst.Position end
+        end
+    end
+    if best then SafeTP(best + Vector3.new(0, 3, 0)) end
+end)
+
+-- 3. SERVER HOP
+CreateButton(Pages["Misc"], "Server Hop (Random)", function()
+    pcall(function()
+        local ts = game:GetService("TeleportService")
+        local servers = game:GetService("HttpService"):JSONDecode(
+            game:HttpGet("https://games.roblox.com/v1/games/" .. game.PlaceId .. "/servers/Public?sortOrder=Asc&limit=100")
+        )
+        if servers and servers.data and #servers.data > 0 then
+            local r = servers.data[math.random(1, #servers.data)]
+            if r.id ~= game.JobId then
+                ts:TeleportToPlaceInstance(game.PlaceId, r.id)
+            end
+        end
+    end)
+end)
+
+-- 4. AUTO-PICKUP (Сбор предметов)
+local AutoPickupConn = nil
+CreateToggle(Pages["Misc"], "Auto-Pickup Tools", false, function(v)
+    if v then
+        if not AutoPickupConn then
+            AutoPickupConn = RunService.Heartbeat:Connect(function()
+                local char = LP.Character
+                local hrp = char and char:FindFirstChild("HumanoidRootPart")
+                if not hrp then return end
+                for _, inst in ipairs(WS:GetDescendants()) do
+                    if inst:IsA("Tool") and inst.Parent and inst.Parent ~= char then
+                        local handle = inst:FindFirstChild("Handle")
+                        if handle and (hrp.Position - handle.Position).Magnitude < 10 then
+                            local hum = char:FindFirstChildOfClass("Humanoid")
+                            if hum then
+                                pcall(function() inst.Parent = char end)
+                            end
+                        end
+                    end
+                end
+            end)
+        end
+    else
+        if AutoPickupConn then AutoPickupConn:Disconnect() AutoPickupConn = nil end
+    end
+end)
+table.insert(MM.Connections, { Disconnect = function() if AutoPickupConn then AutoPickupConn:Disconnect() end end })
+
+print("[MeowMod] Part 7 Loaded — Actions, Browser, Server Hop ready.")
