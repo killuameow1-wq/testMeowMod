@@ -1682,3 +1682,255 @@ RunService.RenderStepped:Connect(function()
 end)
 
 print("[MeowMod] Part 5 Loaded — World, Misc, HUD ready.")
+
+-- ═══════════════════════════════════════════════════════════
+--  PART 6: VISUALS, CROSSHAIR, CAMERA, POST-FX
+-- ═══════════════════════════════════════════════════════════
+
+-- 1. FULLBRIGHT
+local WorldState = {oldBright = nil} -- отдельный стейт от части 5
+CreateToggle(Pages["Visuals"], "Fullbright", "Fullbright", function(v)
+    if v then
+        if not WorldState.oldBright then 
+            WorldState.oldBright = {
+                Ambient = Lighting.Ambient, 
+                Outdoor = Lighting.OutdoorAmbient, 
+                Brightness = Lighting.Brightness
+            } 
+        end
+        Lighting.Ambient = Color3.new(1,1,1)
+        Lighting.OutdoorAmbient = Color3.new(1,1,1)
+        Lighting.Brightness = 3
+    else
+        if WorldState.oldBright then
+            Lighting.Ambient = WorldState.oldBright.Ambient
+            Lighting.OutdoorAmbient = WorldState.oldBright.Outdoor
+            Lighting.Brightness = WorldState.oldBright.Brightness
+            WorldState.oldBright = nil
+        end
+    end
+end)
+
+-- 2. CROSSHAIR (На Drawing)
+local CH1 = Drawing.new("Line")
+local CH2 = Drawing.new("Line")
+CH1.Thickness = 2; CH2.Thickness = 2
+CH1.Color = Color3.new(1, 1, 1); CH2.Color = Color3.new(1, 1, 1)
+CH1.Visible = false; CH2.Visible = false
+table.insert(MM.Drawings, CH1); table.insert(MM.Drawings, CH2)
+
+local function RenderCrosshair()
+    if Config.Crosshair then
+        local cx, cy = Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2
+        local sz = Config.CH_Size
+        CH1.From = Vector2.new(cx - sz, cy); CH1.To = Vector2.new(cx + sz, cy); CH1.Visible = true
+        CH2.From = Vector2.new(cx, cy - sz); CH2.To = Vector2.new(cx, cy + sz); CH2.Visible = true
+    else
+        CH1.Visible = false; CH2.Visible = false
+    end
+end
+RunService:BindToRenderStep("MeowCH", Enum.RenderPriority.Camera.Value + 3, RenderCrosshair)
+
+CreateToggle(Pages["Visuals"], "Crosshair", "Crosshair", nil)
+CreateSlider(Pages["Visuals"], "CH Size", 5, 30, "CH_Size", nil)
+CreateSlider(Pages["Visuals"], "Camera FOV", 50, 120, "CameraFOV", function(v)
+    if Camera then Camera.FieldOfView = v end
+end)
+CreateSlider(Pages["Visuals"], "Max FOV (120)", 70, 120, "MaxFOV", function(v)
+    if Camera then Camera.FieldOfView = v end
+end)
+
+-- 3. FREE CAMERA
+local FreeCam = { active = false, speed = 50 }
+local FreeCamConn = nil
+local FreeCamTarget = Camera.CFrame
+
+local function UpdateFreeCam()
+    if not FreeCam.active then return end
+    local move = Vector3.zero
+    if UIS:IsKeyDown(Enum.KeyCode.W) then move = move + FreeCamTarget.LookVector end
+    if UIS:IsKeyDown(Enum.KeyCode.S) then move = move - FreeCamTarget.LookVector end
+    if UIS:IsKeyDown(Enum.KeyCode.A) then move = move - FreeCamTarget.RightVector end
+    if UIS:IsKeyDown(Enum.KeyCode.D) then move = move + FreeCamTarget.RightVector end
+    if UIS:IsKeyDown(Enum.KeyCode.Space) then move = move + Vector3.new(0, 1, 0) end
+    if UIS:IsKeyDown(Enum.KeyCode.LeftControl) then move = move - Vector3.new(0, 1, 0) end
+    
+    if move.Magnitude > 0 then
+        FreeCamTarget = FreeCamTarget + move.Unit * FreeCam.speed * 0.05
+    end
+    Camera.CFrame = FreeCamTarget
+end
+
+CreateToggle(Pages["Visuals"], "Free Camera (WASD)", "FreeCam", function(v)
+    FreeCam.active = v
+    if v then
+        FreeCamTarget = Camera.CFrame
+        Camera.CameraType = Enum.CameraType.Scriptable
+        if not FreeCamConn then
+            FreeCamConn = RunService.RenderStepped:Connect(UpdateFreeCam)
+        end
+    else
+        Camera.CameraType = Enum.CameraType.Custom
+        if FreeCamConn then FreeCamConn:Disconnect() FreeCamConn = nil end
+        local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+        if hum then Camera.CameraSubject = hum end
+    end
+end)
+CreateSlider(Pages["Visuals"], "FreeCam Speed", 10, 200, "FreeCam_Speed", function(v) FreeCam.speed = v end)
+
+-- 4. POST-FX (Bloom, Blur, Color Correction)
+local BloomFX = Instance.new("BloomEffect")
+BloomFX.Name = "MeowBloom"
+BloomFX.Enabled = false
+BloomFX.Intensity = 1
+BloomFX.Size = 24
+BloomFX.Threshold = 0.9
+BloomFX.Parent = Lighting
+
+local BlurFX = Instance.new("BlurEffect")
+BlurFX.Name = "MeowBlur"
+BlurFX.Enabled = false
+BlurFX.Size = 8
+BlurFX.Parent = Lighting
+
+local CC = Instance.new("ColorCorrectionEffect")
+CC.Name = "MeowCC"
+CC.Enabled = true
+CC.Brightness = 0
+CC.Contrast = 0
+CC.Saturation = 0
+CC.TintColor = Color3.new(1, 1, 1)
+CC.Parent = Lighting
+
+CreateToggle(Pages["Visuals"], "Bloom Effect", "Bloom", function(v) BloomFX.Enabled = v end)
+CreateSlider(Pages["Visuals"], "Bloom Intensity", 1, 10, "BloomInt", function(v) BloomFX.Intensity = v / 2 end)
+
+CreateToggle(Pages["Visuals"], "Blur Effect", "Blur", function(v) BlurFX.Enabled = v end)
+CreateSlider(Pages["Visuals"], "Blur Size", 1, 20, "BlurSize", function(v) BlurFX.Size = v end)
+
+CreateSlider(Pages["Visuals"], "Saturation", -100, 100, 0, function(v) CC.Saturation = v / 100 end)
+CreateSlider(Pages["Visuals"], "Contrast", -100, 100, 0, function(v) CC.Contrast = v / 100 end)
+
+-- 5. ATMOSPHERE & SKYBOX
+local Atmo = Instance.new("Atmosphere")
+Atmo.Name = "MeowAtmo"
+Atmo.Density = 0.3
+Atmo.Offset = 0.25
+Atmo.Color = Color3.fromRGB(199, 199, 199)
+Atmo.Decay = Color3.fromRGB(106, 112, 125)
+Atmo.Parent = Lighting
+
+CreateSlider(Pages["World"], "Atmo Density x100", 0, 100, 30, function(v) Atmo.Density = v / 100 end)
+CreateButton(Pages["World"], "Remove Atmosphere", function()
+    Atmo.Density = 0
+end)
+
+local Sky = Instance.new("Sky")
+Sky.Name = "MeowSky"
+Sky.Parent = Lighting
+
+local function SetSky(id)
+    if not id or id == "" then return end
+    local asset = "rbxassetid://" .. id
+    Sky.SkyboxBk = asset
+    Sky.SkyboxDn = asset
+    Sky.SkyboxFt = asset
+    Sky.SkyboxLf = asset
+    Sky.SkyboxRt = asset
+    Sky.SkyboxUp = asset
+end
+
+CreateTextbox(Pages["World"], "Sky ID (Custom)", "rbxassetid://...", "SkyId", function(v)
+    local id = v:match("%d+")
+    if id then SetSky(id) end
+end)
+
+CreateButton(Pages["World"], "Reset Sky", function()
+    Sky:Destroy()
+    local newSky = Instance.new("Sky")
+    newSky.Name = "MeowSky"
+    newSky.Parent = Lighting
+    Sky = newSky
+end)
+
+-- 6. CUSTOM SKIN (Self)
+local CustomSkin = {
+    active = false,
+    color = Color3.fromRGB(255, 0, 0),
+    material = Enum.Material.Neon,
+}
+
+local function ApplySkin(v)
+    CustomSkin.active = v
+    local char = LP.Character
+    if not char then return end
+    for _, p in ipairs(char:GetDescendants()) do
+        if p:IsA("BasePart") then
+            if v then
+                p.Color = CustomSkin.color
+                p.Material = CustomSkin.material
+            else
+                p.Color = Color3.fromRGB(163, 162, 165)
+                p.Material = Enum.Material.Plastic
+            end
+        end
+    end
+end
+
+CreateToggle(Pages["Visuals"], "Custom Skin (Self)", false, ApplySkin)
+
+-- 7. WEAPON FX (Fire & Trail)
+local WeaponFXConn = nil
+CreateToggle(Pages["Visuals"], "Weapon FX (Fire+Trail)", false, function(v)
+    if v then
+        if not WeaponFXConn then
+            WeaponFXConn = RunService.Heartbeat:Connect(function()
+                local char = LP.Character
+                local tool = char and char:FindFirstChildOfClass("Tool")
+                if tool then
+                    local handle = tool:FindFirstChild("Handle")
+                    if handle then
+                        if not handle:FindFirstChild("MeowFire") then
+                            local fire = Instance.new("Fire")
+                            fire.Name = "MeowFire"
+                            fire.Size = 5
+                            fire.Heat = 10
+                            fire.Color = Color3.fromRGB(0, 255, 255)
+                            fire.SecondaryColor = Color3.fromRGB(255, 0, 255)
+                            fire.Parent = handle
+                        end
+                        if not handle:FindFirstChild("MeowTrail") then
+                            local att0 = Instance.new("Attachment", handle)
+                            att0.Position = Vector3.new(0, 0.5, 0)
+                            local att1 = Instance.new("Attachment", handle)
+                            att1.Position = Vector3.new(0, -0.5, 0)
+                            
+                            local trail = Instance.new("Trail")
+                            trail.Name = "MeowTrail"
+                            trail.Attachment0 = att0
+                            trail.Attachment1 = att1
+                            trail.Lifetime = 0.5
+                            trail.Color = ColorSequence.new(Color3.fromRGB(0, 255, 255), Color3.fromRGB(255, 0, 255))
+                            trail.Parent = handle
+                        end
+                    end
+                end
+            end)
+        end
+    else
+        if WeaponFXConn then WeaponFXConn:Disconnect() WeaponFXConn = nil end
+        local char = LP.Character
+        local tool = char and char:FindFirstChildOfClass("Tool")
+        if tool then
+            local handle = tool:FindFirstChild("Handle")
+            if handle then
+                local fire = handle:FindFirstChild("MeowFire")
+                if fire then fire:Destroy() end
+                local trail = handle:FindFirstChild("MeowTrail")
+                if trail then trail:Destroy() end
+            end
+        end
+    end
+end)
+
+print("[MeowMod] Part 6 Loaded — Visuals, Post-FX, Skybox ready.")
