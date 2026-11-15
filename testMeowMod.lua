@@ -1510,3 +1510,175 @@ RunService.RenderStepped:Connect(function()
 end)
 
 print("[MeowMod] Part 4 Loaded — Teleport, Waypoints, Players ready.")
+
+-- ═══════════════════════════════════════════════════════════
+--  PART 5: WORLD, MISC, HUD
+-- ═══════════════════════════════════════════════════════════
+
+-- 1. ВКЛАДКА WORLD (Окружение)
+local WorldState = {oldBright = nil, oldFogEnd = nil, oldGravity = nil}
+
+CreateToggle(Pages["World"], "Fog Off", "World_FogOff", function(v)
+    if v then
+        if not WorldState.oldFogEnd then WorldState.oldFogEnd = Lighting.FogEnd end
+        Lighting.FogEnd = 1e6
+    else
+        if WorldState.oldFogEnd then 
+            Lighting.FogEnd = WorldState.oldFogEnd 
+            WorldState.oldFogEnd = nil 
+        end
+    end
+end)
+
+CreateSlider(Pages["World"], "Time of Day", 0, 24, "World_Time", function(v)
+    Lighting.ClockTime = v
+end)
+
+CreateSlider(Pages["World"], "Gravity", 50, 500, "World_Gravity", function(v)
+    if not WorldState.oldGravity then WorldState.oldGravity = WS.Gravity end
+    WS.Gravity = v
+end)
+
+CreateButton(Pages["World"], "Reset Gravity", function()
+    Config.World_Gravity = 196.2
+    WS.Gravity = 196.2
+end)
+
+-- 2. ВКЛАДКА MISC
+-- Anti-AFK
+local AntiAFKConn = nil
+CreateToggle(Pages["Misc"], "Anti-AFK", "Misc_AntiAFK", function(v)
+    if v then
+        if not AntiAFKConn then
+            AntiAFKConn = RunService.Heartbeat:Connect(function()
+                local vu = game:GetService("VirtualUser")
+                pcall(function() 
+                    vu:CaptureController() 
+                    vu:ClickButton2(Vector2.new()) 
+                end)
+            end)
+        end
+    else
+        if AntiAFKConn then AntiAFKConn:Disconnect() AntiAFKConn = nil end
+    end
+end)
+table.insert(MM.Connections, { Disconnect = function() if AntiAFKConn then AntiAFKConn:Disconnect() end end })
+
+-- FPS Cap
+CreateSlider(Pages["Misc"], "FPS Cap", 30, 240, "Misc_FPSCap", function(v)
+    pcall(function() setfpscap(v) end)
+end)
+
+-- AutoClicker
+local ACConn = nil
+CreateToggle(Pages["Misc"], "AutoClicker (LMB)", "AutoClicker", function(v)
+    if v then
+        if not ACConn then
+            ACConn = task.spawn(function()
+                while Config.AutoClicker do
+                    local vu = game:GetService("VirtualUser")
+                    pcall(function() 
+                        vu:CaptureController() 
+                        vu:ClickButton1(Vector2.new()) 
+                    end)
+                    task.wait(Config.AC_Delay / 1000)
+                end
+            end)
+        end
+    else
+        if ACConn then pcall(function() task.cancel(ACConn) end) ACConn = nil end
+    end
+end)
+table.insert(MM.Connections, { Disconnect = function() if ACConn then task.cancel(ACConn) end end })
+
+CreateSlider(Pages["Misc"], "AC Delay ms", 10, 500, "AC_Delay", nil)
+
+-- Chat Spam
+CreateTextbox(Pages["Misc"], "Spam Message", "meow", "ChatSpam_Msg", nil)
+local ChatSpamConn = nil
+CreateToggle(Pages["Misc"], "Chat Spam", "ChatSpam", function(v)
+    if v then
+        if not ChatSpamConn then
+            ChatSpamConn = task.spawn(function()
+                while Config.ChatSpam do
+                    local re = game:GetService("ReplicatedStorage")
+                    local ev = re:FindFirstChild("DefaultChatSystemChatEvents")
+                    if ev then
+                        local remote = ev:FindFirstChild("SayMessageRequest")
+                        if remote then 
+                            pcall(function() 
+                                remote:FireServer(Config.ChatSpam_Msg, "All") 
+                            end) 
+                        end
+                    end
+                    task.wait(Config.ChatSpam_Delay)
+                end
+            end)
+        end
+    else
+        if ChatSpamConn then pcall(function() task.cancel(ChatSpamConn) end) ChatSpamConn = nil end
+    end
+end)
+table.insert(MM.Connections, { Disconnect = function() if ChatSpamConn then task.cancel(ChatSpamConn) end end })
+
+CreateSlider(Pages["Misc"], "Chat Delay 0.1s", 5, 50, 10, function(v) Config.ChatSpam_Delay = v / 10 end)
+
+-- 3. HUD (Индикаторы FPS и Ping)
+local FPSLabel = Instance.new("TextLabel")
+FPSLabel.Size = UDim2.new(0, 100, 0, 20)
+FPSLabel.Position = UDim2.new(0, 10, 0, 10)
+FPSLabel.BackgroundColor3 = Color3.new(0, 0, 0)
+FPSLabel.BackgroundTransparency = 0.5
+FPSLabel.TextColor3 = Color3.new(0, 1, 0)
+FPSLabel.Font = Enum.Font.Code
+FPSLabel.TextSize = 12
+FPSLabel.Visible = false
+FPSLabel.ZIndex = 10
+FPSLabel.Parent = ScreenGui
+corner(FPSLabel, 4)
+
+local PingLabel = Instance.new("TextLabel")
+PingLabel.Size = UDim2.new(0, 100, 0, 20)
+PingLabel.Position = UDim2.new(0, 10, 0, 32)
+PingLabel.BackgroundColor3 = Color3.new(0, 0, 0)
+PingLabel.BackgroundTransparency = 0.5
+PingLabel.TextColor3 = Color3.new(1, 1, 1)
+PingLabel.Font = Enum.Font.Code
+PingLabel.TextSize = 12
+PingLabel.Visible = false
+PingLabel.ZIndex = 10
+PingLabel.Parent = ScreenGui
+corner(PingLabel, 4)
+
+CreateToggle(Pages["Misc"], "Show FPS", "ShowFPS", function(v)
+    FPSLabel.Visible = v
+end)
+
+CreateToggle(Pages["Misc"], "Show Ping", "ShowPing", function(v)
+    PingLabel.Visible = v
+end)
+
+-- Цикл обновления HUD
+local fpsCount = 0
+local fpsTimer = tick()
+
+RunService.RenderStepped:Connect(function()
+    if Config.ShowFPS then
+        fpsCount = fpsCount + 1
+        if tick() - fpsTimer >= 1 then
+            FPSLabel.Text = "FPS: " .. tostring(fpsCount)
+            fpsCount = 0
+            fpsTimer = tick()
+        end
+    end
+    
+    if Config.ShowPing then
+        local ping = 0
+        pcall(function()
+            ping = math.floor(game:GetService("Stats").Network.ServerStatsItem["Data Ping"]:GetValue())
+        end)
+        PingLabel.Text = "Ping: " .. tostring(ping) .. "ms"
+    end
+end)
+
+print("[MeowMod] Part 5 Loaded — World, Misc, HUD ready.")
