@@ -3767,3 +3767,208 @@ RunService:BindToRenderStep("MeowRender", Enum.RenderPriority.Camera.Value + 2, 
 end)
 
 print("[MeowUI] Part 20 Loaded — Auto-Mine, Instant Farm, Anti-Lag, Waypoints ready.")
+
+-- ═══════════════════════════════════════════════════════════
+--  PART 24: SPECTATE NUKE & LAUNCH
+-- ═══════════════════════════════════════════════════════════
+
+local SpectateNuke = {
+    Active = false,
+    Subject = nil,
+    AutoExplode = false,
+    LastExplode = 0,
+    ExplodeCooldown = 0.5
+}
+
+-- Функция для создания взрыва
+local function CreateExplosion(pos)
+    local ex = Instance.new("Explosion")
+    ex.Position = pos
+    ex.BlastRadius = 30
+    ex.BlastPressure = 500000
+    ex.DestroyJointRadiusPercent = 1 -- Разрывает Motor6D (разрывает игрока на куски)
+    ex.Parent = workspace
+end
+
+-- Хук на слежку
+local function SpectatePlayer(target)
+    SpectateNuke.Subject = target
+    SpectateNuke.Active = true
+    if target and target.Character then
+        Camera.CameraSubject = target.Character:FindFirstChildOfClass("Humanoid") or target.Character
+    end
+end
+
+-- Кнопка для UI
+local function AddPart24UI()
+    if not Pages["Players"] then return end
+
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, 0, 0, 46)
+    btn.BackgroundColor3 = Color3.fromRGB(200, 30, 30)
+    btn.BackgroundTransparency = 0.2
+    btn.Text = "☢ Spectate & Nuke Target"
+    btn.TextColor3 = Color3.new(1,1,1)
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 13
+    btn.BorderSizePixel = 0
+    btn.Parent = Pages["Players"]
+    
+    local c = Instance.new("UICorner", btn)
+    c.CornerRadius = UDim.new(0, 8)
+
+    btn.MouseButton1Click:Connect(function()
+        local target = GetClosestTarget(9999, 99999) -- Берем ближайшего, если нет цели
+        if target and target.Parent then
+            SpectatePlayer(target.Parent)
+            task.wait(0.1)
+            CreateExplosion(target.Position)
+        end
+    end)
+
+    -- Авто-взрыв при слежке
+    local toggle = Instance.new("TextButton")
+    toggle.Size = UDim2.new(1, 0, 0, 40)
+    toggle.BackgroundColor3 = Color3.fromRGB(25, 25, 35)
+    toggle.Text = "Auto-Explode on Spectate"
+    toggle.TextColor3 = Color3.new(1,1,1)
+    toggle.Font = Enum.Font.GothamBold
+    toggle.TextSize = 12
+    toggle.BorderSizePixel = 0
+    toggle.Parent = Pages["Players"]
+    local c2 = Instance.new("UICorner", toggle)
+    c2.CornerRadius = UDim.new(0, 8)
+
+    toggle.MouseButton1Click:Connect(function()
+        SpectateNuke.AutoExplode = not SpectateNuke.AutoExplode
+        toggle.BackgroundColor3 = SpectateNuke.AutoExplode and Color3.fromRGB(0, 200, 0) or Color3.fromRGB(25, 25, 35)
+    end)
+    
+    RunService.Heartbeat:Connect(function()
+        if SpectateNuke.Active and SpectateNuke.Subject and SpectateNuke.AutoExplode then
+            local now = tick()
+            if now - SpectateNuke.LastExplode > SpectateNuke.ExplodeCooldown then
+                SpectateNuke.LastExplode = now
+                local char = SpectateNuke.Subject.Character
+                if char and char:FindFirstChild("HumanoidRootPart") then
+                    CreateExplosion(char.HumanoidRootPart.Position)
+                end
+            end
+        end
+    end)
+end
+
+-- ═══════════════════════════════════════════════════════════
+--  PART 25: LAUNCH PLAYER & ENHANCEMENTS
+-- ═══════════════════════════════════════════════════════════
+
+local LaunchConfig = {
+    Power = 500,
+    Enabled = true
+}
+
+local function LaunchTarget(targetPlayer)
+    if not targetPlayer or not targetPlayer.Character then return end
+    local hrp = targetPlayer.Character:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        -- Отрываем от земли и даем пизды
+        hrp.AssemblyLinearVelocity = Vector3.new(0, LaunchConfig.Power, 0)
+        hrp.AssemblyAngularVelocity = Vector3.new(math.random(-50,50), math.random(-50,50), math.random(-50,50))
+        
+        -- Красиво разрываем на части (опционально)
+        if LaunchConfig.Enabled then
+            for _, v in pairs(targetPlayer.Character:GetDescendants()) do
+                if v:IsA("Motor6D") then
+                    v:Destroy() -- Отрываем конечности
+                end
+            end
+        end
+    end
+end
+
+local function AddPart25UI()
+    if not Pages["Players"] then return end
+
+    local btn = Instance.new("TextButton")
+    btn.Size = UDim2.new(1, 0, 0, 46)
+    btn.BackgroundColor3 = Color3.fromRGB(30, 100, 200)
+    btn.BackgroundTransparency = 0.2
+    btn.Text = "🚀 Launch Target"
+    btn.TextColor3 = Color3.new(1,1,1)
+    btn.Font = Enum.Font.GothamBold
+    btn.TextSize = 13
+    btn.BorderSizePixel = 0
+    btn.Parent = Pages["Players"]
+    
+    local c = Instance.new("UICorner", btn)
+    c.CornerRadius = UDim.new(0, 8)
+
+    btn.MouseButton1Click:Connect(function()
+        local target = GetClosestTarget(9999, 99999)
+        if target and target.Parent then
+            LaunchTarget(target.Parent)
+        end
+    end)
+
+    -- Слайдер для силы
+    local sliderFrame = Instance.new("Frame")
+    sliderFrame.Size = UDim2.new(1, 0, 0, 60)
+    sliderFrame.BackgroundColor3 = Color3.fromRGB(25, 25, 35)
+    sliderFrame.BackgroundTransparency = 0.2
+    sliderFrame.BorderSizePixel = 0
+    sliderFrame.Parent = Pages["Players"]
+    local c3 = Instance.new("UICorner", sliderFrame)
+    c3.CornerRadius = UDim.new(0, 8)
+
+    local lbl = Instance.new("TextLabel")
+    lbl.Size = UDim2.new(1, -60, 0, 20)
+    lbl.Position = UDim2.new(0, 16, 0, 8)
+    lbl.BackgroundTransparency = 1
+    lbl.Text = "Launch Power"
+    lbl.TextColor3 = Color3.new(1,1,1)
+    lbl.TextXAlignment = Enum.TextXAlignment.Left
+    lbl.Font = Enum.Font.GothamMedium
+    lbl.TextSize = 13
+    lbl.Parent = sliderFrame
+
+    local valLbl = Instance.new("TextLabel")
+    valLbl.Size = UDim2.new(0, 50, 0, 20)
+    valLbl.Position = UDim2.new(1, -66, 0, 8)
+    valLbl.BackgroundTransparency = 1
+    valLbl.Text = tostring(LaunchConfig.Power)
+    valLbl.TextColor3 = Color3.fromRGB(220, 50, 70)
+    valLbl.Font = Enum.Font.GothamBold
+    valLbl.TextSize = 13
+    valLbl.Parent = sliderFrame
+    
+    -- Упрощенный слайдер
+    local track = Instance.new("Frame")
+    track.Size = UDim2.new(1, -32, 0, 6)
+    track.Position = UDim2.new(0, 16, 0, 38)
+    track.BackgroundColor3 = Color3.fromRGB(40, 40, 55)
+    track.BorderSizePixel = 0
+    track.Parent = sliderFrame
+    local c4 = Instance.new("UICorner", track)
+    c4.CornerRadius = UDim.new(0, 3)
+
+    local hit = Instance.new("TextButton")
+    hit.Size = UDim2.new(1, 0, 3, 0)
+    hit.Position = UDim2.new(0, 0, -1, 0)
+    hit.BackgroundTransparency = 1
+    hit.Text = ""
+    hit.Parent = track
+
+    hit.MouseButton1Down:Connect(function()
+        local pos = math.clamp((UIS:GetMouseLocation().X - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
+        LaunchConfig.Power = math.floor(100 + 1900 * pos)
+        valLbl.Text = tostring(LaunchConfig.Power)
+    end)
+end
+
+-- Запуск при инициализации UI
+task.defer(function()
+    task.wait(1)
+    AddPart24UI()
+    AddPart25UI()
+    print("[MeowUI] Part 24-25 Loaded — Spectate Nuke, Launch ready.")
+end)
