@@ -1314,3 +1314,199 @@ ApplySpeed()
 ApplyJumpPower()
 
 print("[MeowMod] Part 3 Loaded — Movement, Fly Joystick, Aim Button ready.")
+
+-- ═══════════════════════════════════════════════════════════
+--  PART 4: TELEPORT, WAYPOINTS, PLAYERS LIST
+-- ═══════════════════════════════════════════════════════════
+
+-- 1. БЕЗОПАСНЫЙ ТЕЛЕПОРТ (SafeTP)
+local function GetGroundY(pos)
+    local rp = RaycastParams.new()
+    rp.FilterDescendantsInstances = {LP.Character}
+    rp.FilterType = Enum.RaycastFilterType.Exclude
+    local hit = WS:Raycast(pos + Vector3.new(0, 100, 0), Vector3.new(0, -500, 0), rp)
+    if hit then return hit.Position.Y end
+    return nil
+end
+
+local function SafeTP(pos)
+    local char = LP.Character
+    local hrp = char and char:FindFirstChild("HumanoidRootPart")
+    if not hrp then return false end
+    local y = GetGroundY(pos) or pos.Y
+    hrp.CFrame = CFrame.new(pos.X, y + Config.TP_SafeDrop, pos.Z)
+    pcall(function()
+        hrp.AssemblyLinearVelocity = Vector3.zero
+        hrp.AssemblyAngularVelocity = Vector3.zero
+    end)
+    return true
+end
+
+local TPHistory = {}
+local function TPForward(dist)
+    local hrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return end
+    table.insert(TPHistory, hrp.CFrame)
+    SafeTP(hrp.Position + Camera.CFrame.LookVector * (dist or 50))
+end
+
+local function TPBack()
+    if #TPHistory == 0 then return end
+    local prev = table.remove(TPHistory)
+    local hrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+    if hrp and prev then hrp.CFrame = prev end
+end
+
+local function TPNearestEnemy()
+    local myHrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+    if not myHrp then return end
+    local best, bestD = nil, math.huge
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= LP and p.Character then
+            local hrp = p.Character:FindFirstChild("HumanoidRootPart")
+            local hum = p.Character:FindFirstChildOfClass("Humanoid")
+            if hrp and hum and hum.Health > 0 then
+                local d = (myHrp.Position - hrp.Position).Magnitude
+                if d < bestD then bestD = d best = hrp end
+            end
+        end
+    end
+    if best then SafeTP(best.Position + Vector3.new(0, 2, 0)) end
+end
+
+-- 2. UI BINDINGS (Teleport)
+CreateButton(Pages["Teleport"], "TP Nearest Enemy", function() TPNearestEnemy() end)
+CreateButton(Pages["Teleport"], "TP Forward 50", function() TPForward(50) end)
+CreateButton(Pages["Teleport"], "TP Up 50", function()
+    local hrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+    if hrp then 
+        table.insert(TPHistory, hrp.CFrame) 
+        hrp.CFrame = hrp.CFrame + Vector3.new(0, 50, 0) 
+    end
+end)
+CreateButton(Pages["Teleport"], "TP Back (undo)", function() TPBack() end)
+
+-- 3. СИСТЕМА ВЕЙПОИНТОВ (Сохранение на диск)
+local WP_PATH = "MeowMod_Waypoints.json"
+local Waypoints = {}
+
+local function LoadWaypoints()
+    if not HasFS() then return end
+    local ok, data = pcall(function() if isfile(WP_PATH) then return readfile(WP_PATH) end end)
+    if ok and data and data ~= "" then
+        local ok2, parsed = pcall(function() return Http:JSONDecode(data) end)
+        if ok2 and parsed then Waypoints = parsed end
+    end
+end
+
+local function SaveWaypoints()
+    if not HasFS() then return end
+    pcall(function() writefile(WP_PATH, Http:JSONEncode(Waypoints)) end)
+end
+LoadWaypoints()
+
+CreateButton(Pages["Teleport"], "Save Current Pos as Waypoint", function()
+    local hrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+    if hrp then
+        local name = "wp_" .. tostring(#Waypoints + 1)
+        table.insert(Waypoints, {name = name, pos = {X = hrp.Position.X, Y = hrp.Position.Y, Z = hrp.Position.Z}})
+        SaveWaypoints()
+        print("[MeowMod] Waypoint saved: " .. name)
+    end
+end)
+
+CreateButton(Pages["Teleport"], "List Waypoints in Console", function()
+    for _, wp in ipairs(Waypoints) do
+        print("[MeowMod] " .. wp.name .. " @ " .. tostring(math.floor(wp.pos.X)) .. ", " .. tostring(math.floor(wp.pos.Y)) .. ", " .. tostring(math.floor(wp.pos.Z)))
+    end
+end)
+
+-- 4. СПИСОК ИГРОКОВ (Players List)
+local SpectateTarget = nil
+
+local function UpdatePlayerList()
+    -- Очищаем старый список (только кнопки игроков)
+    for _, v in pairs(Pages["Players"]:GetChildren()) do
+        if v:IsA("TextButton") and v:GetAttribute("isPlayerBtn") then 
+            v:Destroy() 
+        end
+    end
+    
+    local myHrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= LP and p.Character then
+            local hrp = p.Character:FindFirstChild("HumanoidRootPart")
+            local hum = p.Character:FindFirstChildOfClass("Humanoid")
+            if hrp and hum and hum.Health > 0 then
+                local d = myHrp and math.floor((myHrp.Position - hrp.Position).Magnitude) or 0
+                
+                local Btn = Instance.new("TextButton")
+                Btn.Size = UDim2.new(1, 0, 0, 46)
+                Btn.BackgroundColor3 = THEME.Surface
+                Btn.Text = "  " .. p.Name .. "     " .. d .. "m"
+                Btn.TextColor3 = THEME.Text
+                Btn.TextXAlignment = Enum.TextXAlignment.Left
+                Btn.Font = Enum.Font.GothamMedium
+                Btn.TextSize = 13
+                Btn.BorderSizePixel = 0
+                Btn.Parent = Pages["Players"]
+                Btn:SetAttribute("isPlayerBtn", true)
+                corner(Btn, 8)
+                
+                -- ТП при клике
+                Btn.MouseButton1Click:Connect(function()
+                    if hrp then SafeTP(hrp.Position + Vector3.new(0, 2, 0)) end
+                end)
+            end
+        end
+    end
+end
+
+-- Обновляем список раз в 2 секунды
+task.spawn(function() 
+    while task.wait(2) do 
+        UpdatePlayerList() 
+    end 
+end)
+
+-- 5. СПЕКТАТОР
+CreateButton(Pages["Players"], "Spectate Nearest", function()
+    local myHrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+    if not myHrp then return end
+    local best, bestD = nil, math.huge
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= LP and p.Character then
+            local hrp = p.Character:FindFirstChild("HumanoidRootPart")
+            if hrp then
+                local d = (myHrp.Position - hrp.Position).Magnitude
+                if d < bestD then bestD = d best = p end
+            end
+        end
+    end
+    if best then 
+        SpectateTarget = best 
+        print("[MeowMod] Spectating: " .. best.Name)
+    end
+end)
+
+CreateButton(Pages["Players"], "Spectate Stop", function()
+    SpectateTarget = nil
+    local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+    if hum then Camera.CameraSubject = hum end
+end)
+
+-- Цикл слежки за целью
+RunService.RenderStepped:Connect(function()
+    if SpectateTarget then
+        local tHead = SpectateTarget.Character and SpectateTarget.Character:FindFirstChild("Head")
+        if tHead then
+            Camera.CameraSubject = SpectateTarget.Character:FindFirstChildOfClass("Humanoid")
+        else
+            SpectateTarget = nil -- если игрок умер/вышел
+            local hum = LP.Character and LP.Character:FindFirstChildOfClass("Humanoid")
+            if hum then Camera.CameraSubject = hum end
+        end
+    end
+end)
+
+print("[MeowMod] Part 4 Loaded — Teleport, Waypoints, Players ready.")
