@@ -618,3 +618,416 @@ task.spawn(function()
 end)
 
 print("[MeowMod] Part 1 Loaded — Base, Config, UI ready.")
+
+-- ═══════════════════════════════════════════════════════════
+--  PART 2: AIMBOT & ESP
+-- ═══════════════════════════════════════════════════════════
+
+-- 1. SILENT AIM (Хук на метатейбл)
+local oldNamecall = nil
+local function HookSilent()
+    if oldNamecall then return end
+    pcall(function()
+        local mt = getrawmetatable(game)
+        oldNamecall = mt.__namecall
+        setreadonly(mt, false)
+        mt.__namecall = newcclosure(function(self, ...)
+            if Config.SilentAim and MM.SilentTarget and MM.SilentTarget.Parent then
+                local method = getnamecallmethod()
+                if method == "Raycast" or method == "FindPartOnRay" then
+                    local args = {...}
+                    local headPos = MM.SilentTarget.Position
+                    if method == "Raycast" then
+                        args[2] = (headPos - args[1]).Unit * (headPos - args[1]).Magnitude
+                        return oldNamecall(self, unpack(args))
+                    elseif method == "FindPartOnRay" then
+                        args[1] = Ray.new(args[1].Origin, headPos - args[1].Origin)
+                        return oldNamecall(self, unpack(args))
+                    end
+                end
+            end
+            return oldNamecall(self, ...)
+        end)
+        setreadonly(mt, true)
+    end)
+end
+HookSilent()
+
+-- 2. ЛОГИКА ПОИСКА ЦЕЛИ
+function MM.GetClosestTarget(fov, maxDist)
+    local hrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+    if not hrp then return nil end
+    
+    local myPos = hrp.Position
+    local cx, cy = Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2
+    local best, bestDist = nil, math.huge
+    
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= LP and p.Character then
+            local tHead = p.Character:FindFirstChild("Head")
+            local hum = p.Character:FindFirstChildOfClass("Humanoid")
+            
+            if tHead and hum and hum.Health > 0 then
+                local d3 = (myPos - tHead.Position).Magnitude
+                if d3 <= maxDist then
+                    local sp, on = Camera:WorldToViewportPoint(tHead.Position)
+                    if on then
+                        local d2 = math.sqrt((sp.X - cx)^2 + (sp.Y - cy)^2)
+                        if d2 <= fov and d2 < bestDist then
+                            bestDist = d2
+                            best = tHead
+                        end
+                    end
+                end
+            end
+        end
+    end
+    return best
+end
+
+-- 3. ВИЗУАЛЬНЫЙ АИМ (Assist)
+local VisualAiming = false
+local VisualAimTarget = nil
+
+MM.SetVisualAiming = function(state) VisualAiming = state end
+
+local AimFOVCircle = Drawing.new("Circle")
+AimFOVCircle.Thickness = 1.5
+AimFOVCircle.Filled = false
+AimFOVCircle.Visible = false
+table.insert(MM.Drawings, AimFOVCircle)
+
+local function AimUpdate()
+    -- Silent Aim
+    if Config.SilentAim then
+        MM.SilentTarget = MM.GetClosestTarget(Config.SilentFOV, Config.SilentMaxDist)
+        if MM.SilentTarget then
+            AimFOVCircle.Position = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+            AimFOVCircle.Radius = Config.SilentFOV
+            AimFOVCircle.Color = Color3.fromRGB(180, 0, 255)
+            AimFOVCircle.Visible = true
+        elseif not VisualAiming and not Config.ShowAimFOV then
+            AimFOVCircle.Visible = false
+        end
+    else
+        MM.SilentTarget = nil
+    end
+
+    -- Visual Aim
+    if Config.Aim and VisualAiming then
+        if VisualAimTarget then
+            local hum = VisualAimTarget.Parent and VisualAimTarget.Parent:FindFirstChildOfClass("Humanoid")
+            if not hum or hum.Health <= 0 then VisualAimTarget = nil
+            else
+                local cx, cy = Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2
+                local sp, on = Camera:WorldToViewportPoint(VisualAimTarget.Position)
+                if on then
+                    local d2 = math.sqrt((sp.X - cx)^2 + (sp.Y - cy)^2)
+                    if d2 > Config.AimFOV then VisualAimTarget = nil end
+                else VisualAimTarget = nil end
+            end
+        end
+        if not VisualAimTarget then 
+            VisualAimTarget = MM.GetClosestTarget(Config.AimFOV, Config.AimMaxDist) 
+        end
+        
+        if VisualAimTarget then
+            local targetCF = CFrame.new(Camera.CFrame.Position, VisualAimTarget.Position)
+            Camera.CFrame = Camera.CFrame:Lerp(targetCF, Config.AimSmooth)
+        end
+        
+        if not Config.SilentAim and not Config.ShowAimFOV then
+            AimFOVCircle.Position = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+            AimFOVCircle.Radius = Config.AimFOV
+            AimFOVCircle.Color = Color3.fromRGB(0, 240, 255)
+            AimFOVCircle.Visible = true
+        end
+    else
+        VisualAimTarget = nil
+        if not Config.SilentAim and not Config.ShowAimFOV then AimFOVCircle.Visible = false end
+    end
+    
+    -- Show Aim FOV (Visual check for config)
+    if Config.ShowAimFOV and not Config.SilentAim and not VisualAiming then
+        AimFOVCircle.Position = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+        AimFOVCircle.Radius = Config.AimFOV
+        AimFOVCircle.Color = Color3.fromRGB(0, 240, 255)
+        AimFOVCircle.Visible = true
+    end
+end
+
+RunService:BindToRenderStep("MeowAim", Enum.RenderPriority.Camera.Value + 2, AimUpdate)
+
+-- 4. ESP (Игроки)
+local ESPDraws = {}
+local function CreateESPDraws(player)
+    if ESPDraws[player] then return ESPDraws[player] end
+    local ok, t = pcall(function()
+        return { Box = Drawing.new("Square"), Name = Drawing.new("Text"), Dist = Drawing.new("Text") }
+    end)
+    if not ok or not t then return nil end
+    
+    t.Box.Thickness = 1
+    t.Box.Color = Color3.fromRGB(0, 240, 255)
+    t.Name.Size = 13; t.Name.Center = true; t.Name.Outline = true
+    t.Name.Color = Color3.fromRGB(255, 255, 255)
+    t.Dist.Size = 12; t.Dist.Center = true; t.Dist.Outline = true
+    t.Dist.Color = Color3.fromRGB(180, 180, 180)
+    
+    table.insert(MM.Drawings, t.Box)
+    table.insert(MM.Drawings, t.Name)
+    table.insert(MM.Drawings, t.Dist)
+    
+    ESPDraws[player] = t
+    return t
+end
+
+local function HideESP(d)
+    if not d then return end
+    d.Box.Visible = false
+    d.Name.Visible = false
+    d.Dist.Visible = false
+end
+
+local function RemoveESP(player)
+    if not ESPDraws[player] then return end
+    local d = ESPDraws[player]
+    pcall(function() d.Box:Remove() end)
+    pcall(function() d.Name:Remove() end)
+    pcall(function() d.Dist:Remove() end)
+    ESPDraws[player] = nil
+end
+Players.PlayerRemoving:Connect(RemoveESP)
+
+local function GetPlayerBox(char)
+    local ok, cf, size = pcall(function() return char:GetBoundingBox() end)
+    if ok and cf and size then
+        local tS, tOn = Camera:WorldToViewportPoint(cf.Position + Vector3.new(0, size.Y / 2, 0))
+        local bS, bOn = Camera:WorldToViewportPoint(cf.Position - Vector3.new(0, size.Y / 2, 0))
+        local lS, lOn = Camera:WorldToViewportPoint(cf.Position - Vector3.new(size.X / 2, 0, 0))
+        local rS, rOn = Camera:WorldToViewportPoint(cf.Position + Vector3.new(size.X / 2, 0, 0))
+        if tOn and bOn and lOn and rOn then
+            local w = math.abs(rS.X - lS.X) 
+            local h = math.abs(bS.Y - tS.Y)
+            if w > 0 and h > 0 and w < 800 and h < 800 then 
+                return {x = lS.X, y = tS.Y, w = w, h = h} 
+            end
+        end
+    end
+    local head = char:FindFirstChild("Head")
+    local leftFoot = char:FindFirstChild("LeftFoot") or char:FindFirstChild("LeftLowerLeg")
+    local rightFoot = char:FindFirstChild("RightFoot") or char:FindFirstChild("RightLowerLeg")
+    if head and leftFoot and rightFoot then
+        local hS, hOn = Camera:WorldToViewportPoint(head.Position + Vector3.new(0, 0.5, 0))
+        local fS, fOn = Camera:WorldToViewportPoint(leftFoot.Position - Vector3.new(0, 0.5, 0))
+        local rS, rOn = Camera:WorldToViewportPoint(rightFoot.Position - Vector3.new(0, 0.5, 0))
+        if hOn and fOn and rOn then
+            local h = math.abs(fS.Y - hS.Y) 
+            local w = h * 0.5
+            if h > 0 and w > 0 then 
+                return {x = hS.X - w / 2, y = hS.Y, w = w, h = h} 
+            end
+        end
+    end
+    return nil
+end
+
+local function RenderESP()
+    if not Config.ESP then
+        for _, d in pairs(ESPDraws) do HideESP(d) end
+        return
+    end
+    
+    local myHrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+    local myPos = myHrp and myHrp.Position
+    
+    for _, p in pairs(Players:GetPlayers()) do
+        if p ~= LP then
+            local char = p.Character
+            local hrp = char and char:FindFirstChild("HumanoidRootPart")
+            local hum = char and char:FindFirstChildOfClass("Humanoid")
+            local d = ESPDraws[p]
+            
+            if not (char and hrp and hum and hum.Health > 0) then 
+                if d then HideESP(d) end
+            else
+                local d3 = myPos and (myPos - hrp.Position).Magnitude or 0
+                if d3 > Config.ESP_MaxDist then 
+                    if d then HideESP(d) end
+                else
+                    local sp, onScreen = Camera:WorldToViewportPoint(hrp.Position)
+                    if not onScreen then 
+                        if d then HideESP(d) end
+                    else
+                        if not d then d = CreateESPDraws(p) end
+                        if d then
+                            local box = GetPlayerBox(char)
+                            local x, y, w, h
+                            if box then 
+                                x, y, w, h = box.x, box.y, box.w, box.h
+                            else 
+                                h = math.clamp(8000 / math.max(d3, 1), 20, 500) 
+                                w = h / 2 
+                                x = sp.X - w / 2 
+                                y = sp.Y - h / 2 
+                            end
+                            
+                            d.Box.Visible = Config.ESP_Box
+                            if d.Box.Visible then 
+                                d.Box.Size = Vector2.new(w, h) 
+                                d.Box.Position = Vector2.new(x, y) 
+                            end
+                            
+                            d.Name.Visible = Config.ESP_Name
+                            if d.Name.Visible then 
+                                d.Name.Text = p.Name 
+                                d.Name.Position = Vector2.new(x + w / 2, y - 18) 
+                            end
+                            
+                            d.Dist.Visible = Config.ESP_Dist
+                            if d.Dist.Visible then 
+                                d.Dist.Text = tostring(math.floor(d3)) .. "m" 
+                                d.Dist.Position = Vector2.new(x + w / 2, y + h + 2) 
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+-- 5. ESP (Машины)
+local VehicleDraws = {}
+local VehicleSeats = {}
+
+local function GetVehicleModel(seat) 
+    return seat:FindFirstAncestorOfClass("Model") or seat:FindFirstAncestorOfClass("Folder") 
+end
+local function ModelAnchor(model) 
+    if model.PrimaryPart then return model.PrimaryPart end 
+    return model:FindFirstChildWhichIsA("BasePart", true) 
+end
+
+local function RegisterSeat(seat) 
+    if VehicleSeats[seat] then return end 
+    local model = GetVehicleModel(seat) 
+    if model then VehicleSeats[seat] = model end 
+end
+
+for _, inst in ipairs(WS:GetDescendants()) do 
+    if inst:IsA("VehicleSeat") then RegisterSeat(inst) end 
+end
+WS.DescendantAdded:Connect(function(inst) 
+    if inst:IsA("VehicleSeat") then RegisterSeat(inst) end 
+end)
+
+local function CreateVehicleDraw(model)
+    if VehicleDraws[model] then return VehicleDraws[model] end
+    local ok, t = pcall(function() 
+        return {Box = Drawing.new("Square"), Name = Drawing.new("Text"), Dist = Drawing.new("Text")} 
+    end)
+    if not ok or not t then return nil end
+    
+    t.Box.Thickness = 1
+    t.Box.Color = Color3.fromRGB(255, 165, 0)
+    t.Name.Size = 13; t.Name.Center = true; t.Name.Outline = true
+    t.Name.Color = Color3.fromRGB(255, 200, 0)
+    t.Dist.Size = 12; t.Dist.Center = true; t.Dist.Outline = true
+    t.Dist.Color = Color3.fromRGB(255, 200, 0)
+    
+    table.insert(MM.Drawings, t.Box)
+    table.insert(MM.Drawings, t.Name)
+    table.insert(MM.Drawings, t.Dist)
+    
+    VehicleDraws[model] = t
+    return t
+end
+
+local function RenderVehicleESP()
+    if not Config.V_ESP then 
+        for model, d in pairs(VehicleDraws) do 
+            d.Box.Visible = false; d.Name.Visible = false; d.Dist.Visible = false 
+        end 
+        return 
+    end
+    
+    local myHrp = LP.Character and LP.Character:FindFirstChild("HumanoidRootPart")
+    local myPos = myHrp and myHrp.Position
+    if not myPos then return end
+    
+    local seen = {}
+    for _, model in pairs(VehicleSeats) do
+        if model and model.Parent and not seen[model] then
+            seen[model] = true
+            local anchor = ModelAnchor(model)
+            if anchor then
+                local d = CreateVehicleDraw(model)
+                if d then
+                    local pos = anchor.Position
+                    local d3 = (myPos - pos).Magnitude
+                    if d3 > Config.V_ESP_MaxDist then 
+                        d.Box.Visible = false; d.Name.Visible = false; d.Dist.Visible = false
+                    else
+                        local sp, on = Camera:WorldToViewportPoint(pos)
+                        if not on then 
+                            d.Box.Visible = false; d.Name.Visible = false; d.Dist.Visible = false
+                        else
+                            local sz = math.clamp(8000 / math.max(d3, 1), 24, 300)
+                            d.Box.Visible = Config.V_ESP_Box
+                            if d.Box.Visible then 
+                                d.Box.Size = Vector2.new(sz, sz) 
+                                d.Box.Position = Vector2.new(sp.X - sz / 2, sp.Y - sz / 2) 
+                            end
+                            
+                            d.Name.Visible = Config.V_ESP_Name
+                            if d.Name.Visible then 
+                                d.Name.Text = model.Name 
+                                d.Name.Position = Vector2.new(sp.X, sp.Y - sz / 2 - 18) 
+                            end
+                            
+                            d.Dist.Visible = Config.V_ESP_Dist
+                            if d.Dist.Visible then 
+                                d.Dist.Text = tostring(math.floor(d3)) .. "m" 
+                                d.Dist.Position = Vector2.new(sp.X, sp.Y + sz / 2 + 2) 
+                            end
+                        end
+                    end
+                end
+            end
+        end
+    end
+end
+
+RunService:BindToRenderStep("MeowESP", Enum.RenderPriority.Camera.Value + 1, RenderESP)
+RunService:BindToRenderStep("MeowVESP", Enum.RenderPriority.Camera.Value + 4, RenderVehicleESP)
+
+-- ═══════════════════════════════════════════════════════════
+--  UI BINDINGS (Aim & ESP)
+-- ═══════════════════════════════════════════════════════════
+
+-- Aim Tab
+CreateToggle(Pages["Aim"], "Visual Aim (Assist)", "Aim", nil)
+CreateSlider(Pages["Aim"], "Aim FOV (px)", 50, 500, "AimFOV", nil)
+CreateSlider(Pages["Aim"], "Aim Smooth x100", 1, 100, "AimSmooth", function(v) Config.AimSmooth = v / 100 end)
+CreateSlider(Pages["Aim"], "Aim Max Dist", 100, 3000, "AimMaxDist", nil)
+CreateToggle(Pages["Aim"], "Show Aim FOV", "ShowAimFOV", nil)
+
+CreateToggle(Pages["Aim"], "Silent Aim (hits head)", "SilentAim", nil)
+CreateSlider(Pages["Aim"], "Silent FOV (px)", 50, 500, "SilentFOV", nil)
+CreateSlider(Pages["Aim"], "Silent Max Dist", 100, 3000, "SilentMaxDist", nil)
+
+-- ESP Tab
+CreateToggle(Pages["ESP"], "ESP Master (Players)", "ESP", nil)
+CreateToggle(Pages["ESP"], " - Box", "ESP_Box", nil)
+CreateToggle(Pages["ESP"], " - Name", "ESP_Name", nil)
+CreateToggle(Pages["ESP"], " - Distance", "ESP_Dist", nil)
+CreateSlider(Pages["ESP"], "Player Max Dist", 100, 5000, "ESP_MaxDist", nil)
+
+CreateToggle(Pages["ESP"], "Vehicle ESP Master", "V_ESP", nil)
+CreateToggle(Pages["ESP"], " - Box", "V_ESP_Box", nil)
+CreateToggle(Pages["ESP"], " - Name", "V_ESP_Name", nil)
+CreateToggle(Pages["ESP"], " - Distance", "V_ESP_Dist", nil)
+CreateSlider(Pages["ESP"], "Vehicle Max Dist", 100, 5000, "V_ESP_MaxDist", nil)
+
+print("[MeowMod] Part 2 Loaded — Aim & ESP ready.")
