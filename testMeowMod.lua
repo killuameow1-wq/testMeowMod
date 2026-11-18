@@ -1,5 +1,5 @@
--- Война Магнат | KizmoTek Studio | Delta (Android) | v4 | ollie
--- Multi-layer bypass + advanced ESP + smooth teleport + FOV ring + complex logic
+-- Война Магнат | KizmoTek Studio | Delta (Android) | v5 | ollie
+-- Advanced rawmetatable bypass + projectile prediction + smart ESP + smooth teleport
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -8,7 +8,6 @@ local UIS = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
 local CoreGui = game:GetService("CoreGui")
 local Stats = game:GetService("Stats")
-local Lighting = game:GetService("Lighting")
 local VirtualInputManager = game:GetService("VirtualInputManager")
 
 local LP = Players.LocalPlayer
@@ -19,7 +18,7 @@ local Cfg = {
     Aim = {
         Enabled=true, FOV=150, TeamCheck=true, FriendCheck=true, WallCheck=false,
         HitPart="Head", Predict=true, PredictStrength=0.165, PredictMax=0.35,
-        Resolver=true, Jitter=0.08, PingComp=true,
+        Resolver=true, Jitter=0.08, PingComp=true, GravityDrop=0.0,
         FireDelayMin=0.008, FireDelayMax=0.022, AutoFire=false, AutoFireRate=0.12,
         MagicBullet=true, Humanize=true, CurveStrength=0.02,
         Bypass={IndexHook=true, CFrameSpoof=true, MethodScramble=true},
@@ -52,9 +51,9 @@ local LastAuto=0
 local LastTP=0
 local Locked=nil
 local CachedTarget=nil
-local HooksInstalled={}
+local IsShooting=false
 
-local function log(...) print("[WT v4]", ...) end
+local function log(...) print("[WT v5]", ...) end
 local function addConn(c) table.insert(Conns,c) return c end
 local function now() return tick() end
 
@@ -85,7 +84,7 @@ local function getHitPart(p, prefer)
     return c:FindFirstChild(prefer or Cfg.Aim.HitPart) or c:FindFirstChild("Head") or c:FindFirstChild("HumanoidRootPart")
 end
 
--- ============ TRACKER ============
+-- ============ TRACKER (Deep Prediction) ============
 addConn(RunService.Heartbeat:Connect(function()
     if not Running then return end
     for _,p in ipairs(Players:GetPlayers()) do
@@ -99,7 +98,7 @@ addConn(RunService.Heartbeat:Connect(function()
                 end
                 t.pos=hrp.Position; t.last=n
                 table.insert(t.hist,{pos=hrp.Position,t=n})
-                if #t.hist>12 then table.remove(t.hist,1) end
+                if #t.hist>15 then table.remove(t.hist,1) end
             end
             Tracks[p]=t
         end
@@ -115,8 +114,16 @@ local function predictPos(p, part)
     local ping = Cfg.Aim.PingComp and getPing() or 0.05
     local baseT = Cfg.Aim.PredictStrength * (dist/100)
     local travel = math.clamp(baseT + ping, 0, Cfg.Aim.PredictMax)
+    
     local pred = base + t.vel * travel
-    if Cfg.Aim.Resolver and #(t.hist or {})>=4 then
+    
+    -- Gravity drop compensation (for projectiles)
+    if Cfg.Aim.GravityDrop > 0 then
+        pred = pred - Vector3.new(0, Cfg.Aim.GravityDrop * (travel^2), 0)
+    end
+
+    -- Resolver: stabilize erratic movement
+    if Cfg.Aim.Resolver and #(t.hist or {})>=5 then
         local hist=t.hist; local avgV=Vector3.new()
         for i=2,#hist do
             local dt=hist[i].t-hist[i-1].t
@@ -124,7 +131,9 @@ local function predictPos(p, part)
         end
         avgV = avgV/(#hist-1)
         local var=(t.vel-avgV).Magnitude
-        if var>50 then pred = base + avgV*travel*0.5 + t.vel*travel*0.5 end
+        if var > 45 then -- jitter detected
+            pred = base + (avgV*0.7 + t.vel*0.3) * travel
+        end
     end
     return pred
 end
@@ -169,32 +178,26 @@ local function findTarget()
 end
 
 -- ============ FIRING ============
-local lastTouch=0
 addConn(UIS.InputBegan:Connect(function(i,gp)
     if gp then return end
-    if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then
-        lastTouch=now()
-    end
+    if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then IsShooting=true end
+end))
+addConn(UIS.InputEnded:Connect(function(i,gp)
+    if gp then return end
+    if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then IsShooting=false end
 end))
 
-local function isFiring()
-    if UIS:IsMouseButtonPressed(Enum.UserInputType.MouseButton1) then return true end
-    if UIS:IsMouseButtonPressed(Enum.UserInputType.Touch) then return true end
-    if now()-lastTouch<0.15 then return true end
-    return false
-end
-
--- ============ SILENT AIM ============
+-- ============ RAW METATABLE SILENT AIM ============
 local function humanizeDir(dir)
     if not Cfg.Aim.Humanize then return dir end
     local s=Cfg.Aim.CurveStrength
     return dir + Vector3.new(math.random()-0.5, math.random()-0.5, math.random()-0.5)*s
 end
 
-local function buildRayArgs(method,args)
-    if not Cfg.Aim.Enabled or not CachedTarget then return args end
-    local part=getHitPart(CachedTarget); if not part then return args end
-    local aimPos = jitter(predictPos(CachedTarget, part))
+local function processArgs(method, args, target)
+    if not target then return args end
+    local part=getHitPart(target); if not part then return args end
+    local aimPos = jitter(predictPos(target, part))
 
     if Cfg.Aim.Bypass.CFrameSpoof and method=="Raycast" then
         local o=args[1]
@@ -211,7 +214,7 @@ local function buildRayArgs(method,args)
         if Cfg.Aim.MagicBullet and typeof(args[4])=="RaycastParams" then
             pcall(function()
                 args[4].FilterType=Enum.RaycastFilterType.Exclude
-                args[4].FilterDescendantsInstances={LP.Character,Camera,CachedTarget.Character}
+                args[4].FilterDescendantsInstances={LP.Character,Camera,target.Character}
             end)
         end
         return args
@@ -229,58 +232,57 @@ end
 
 local function installHook()
     if HookActive then return end
+    
+    -- Use rawmetatable for extreme reliability in Delta
     local ok,err=pcall(function()
-        OrigNamecall = hookmetamethod(game,"__namecall",newcclosure(function(self,...)
-            if not Running or not Cfg.Aim.Enabled or not CachedTarget then return OrigNamecall(self,...) end
-            local m=getnamecallmethod()
-            if not (m=="Raycast" or m=="FindPartOnRay" or m=="FindPartOnRayWithIgnoreList" or m=="FindPartOnRayWithWhitelist") then
-                return OrigNamecall(self,...)
+        local mt = getrawmetatable(game)
+        local oldNC = mt.__namecall
+        setreadonly(mt, false)
+        
+        mt.__namecall = newcclosure(function(self, ...)
+            if Running and Cfg.Aim.Enabled and CachedTarget and IsShooting then
+                local m = getnamecallmethod()
+                if m=="Raycast" or m=="FindPartOnRay" or m=="FindPartOnRayWithIgnoreList" or m=="FindPartOnRayWithWhitelist" then
+                    local t=now()
+                    local delay=Cfg.Aim.FireDelayMin + math.random()*(Cfg.Aim.FireDelayMax-Cfg.Aim.FireDelayMin)
+                    if t-LastShot >= delay then
+                        LastShot=t
+                        local args={...}
+                        args=processArgs(m, args, CachedTarget)
+                        return oldNC(self, unpack(args))
+                    end
+                end
             end
-            if not isFiring() then return OrigNamecall(self,...) end
-            local t=now()
-            local delay=Cfg.Aim.FireDelayMin + math.random()*(Cfg.Aim.FireDelayMax-Cfg.Aim.FireDelayMin)
-            if t-LastShot<delay then return OrigNamecall(self,...) end
-            LastShot=t
-            local args={...}
-            args=buildRayArgs(m,args)
-            return OrigNamecall(self, unpack(args))
-        end))
-    end)
-    if ok then HookActive=true; log("namecall hook installed")
-    else log("hook fail:",err) end
-
-    if Cfg.Aim.Bypass.IndexHook then
-        local ok2=pcall(function()
-            OrigIndex = hookmetamethod(game,"__index",newcclosure(function(self,key)
+            return oldNC(self, ...)
+        end)
+        
+        if Cfg.Aim.Bypass.IndexHook then
+            OrigIndex = mt.__index
+            mt.__index = newcclosure(function(self,key)
                 if key=="Name" and self==LP.Character then return "LocalPlayer" end
                 return OrigIndex(self,key)
-            end))
-        end)
-        if ok2 then log("index hook installed") else log("index hook skipped") end
-    end
+            end)
+        end
+        
+        setreadonly(mt, true)
+    end)
+    
+    if ok then HookActive=true; log("Raw namecall hook installed")
+    else log("hook fail:",err) end
 end
 
 local function removeHook()
     if not HookActive then return end
-    pcall(function() hookmetamethod(game,"__namecall",OrigNamecall) end)
-    if OrigIndex then pcall(function() hookmetamethod(game,"__index",OrigIndex) end) end
+    pcall(function()
+        local mt = getrawmetatable(game)
+        setreadonly(mt, false)
+        mt.__namecall = OrigNamecall
+        if OrigIndex then mt.__index = OrigIndex end
+        setreadonly(mt, true)
+    end)
     HookActive=false
     log("hooks removed")
 end
-
--- ============ RENDER LOOP ============
-addConn(RunService.RenderStepped:Connect(function()
-    if not Running then return end
-    CachedTarget = Cfg.Aim.Enabled and findTarget() or nil
-    if Cfg.Aim.AutoFire and CachedTarget and now()-LastAuto>=Cfg.Aim.AutoFireRate then
-        LastAuto=now()
-        pcall(function()
-            VirtualInputManager:SendMouseButtonEvent(0,0,0,true,game,0)
-            task.wait(0.01)
-            VirtualInputManager:SendMouseButtonEvent(0,0,0,false,game,0)
-        end)
-    end
-end))
 
 -- ============ FOV RING ============
 local FovCircle = Drawing.new("Circle")
@@ -290,16 +292,6 @@ FovCircle.Filled = false
 FovCircle.NumSides = 64
 FovCircle.Transparency = 0.6
 FovCircle.Visible = false
-addConn(RunService.RenderStepped:Connect(function()
-    if not Running then return end
-    local vp = Camera.ViewportSize
-    FovCircle.Position = Vector2.new(vp.X/2, vp.Y/2)
-    FovCircle.Radius = Cfg.Aim.FOV
-    FovCircle.Color = Cfg.FOV.Color
-    FovCircle.Thickness = Cfg.FOV.Thickness
-    FovCircle.Filled = Cfg.FOV.Filled
-    FovCircle.Visible = Cfg.FOV.Enabled and Cfg.Aim.Enabled
-end))
 
 -- ============ ESP ============
 local function newD(class,props)
@@ -321,17 +313,17 @@ local function mkEntry()
         skel[i] = newD("Line", {Thickness=1, Color=Cfg.ESP.TextColor, Visible=false})
     end
     return {
-        box        = newD("Square",  {Thickness=1, Filled=false, Color=Cfg.ESP.BoxColor, Visible=false}),
-        boxGlow    = newD("Square",  {Thickness=4, Filled=false, Color=Cfg.ESP.BoxColor, Transparency=0.7, Visible=false}),
-        gradientTop= newD("Square",  {Thickness=1, Filled=false, Color=Cfg.ESP.BoxColor, Visible=false}),
-        name       = newD("Text",    {Size=14, Center=true, Outline=true, Color=Cfg.ESP.TextColor, Visible=false}),
-        dist       = newD("Text",    {Size=12, Center=true, Outline=true, Color=Cfg.ESP.TextColor, Visible=false}),
-        health     = newD("Square",  {Thickness=2, Filled=true, Color=Color3.fromRGB(60,255,60), Visible=false}),
-        healthBg   = newD("Square",  {Thickness=1, Filled=true, Color=Color3.fromRGB(30,30,30), Visible=false}),
-        tracer     = newD("Line",    {Thickness=1, Color=Cfg.ESP.TracerColor, Visible=false}),
-        arrow      = newD("Triangle",{Thickness=1, Filled=true, Color=Cfg.ESP.ArrowColor, Visible=false}),
-        offArrow   = newD("Triangle",{Thickness=1, Filled=true, Color=Cfg.ESP.ArrowColor, Visible=false}),
-        skeleton   = skel,
+        box = newD("Square", {Thickness=1, Filled=false, Color=Cfg.ESP.BoxColor, Visible=false}),
+        boxGlow = newD("Square", {Thickness=4, Filled=false, Color=Cfg.ESP.BoxColor, Transparency=0.7, Visible=false}),
+        gradientTop = newD("Square", {Thickness=1, Filled=false, Color=Cfg.ESP.BoxColor, Visible=false}),
+        name = newD("Text", {Size=14, Center=true, Outline=true, Color=Cfg.ESP.TextColor, Visible=false}),
+        dist = newD("Text", {Size=12, Center=true, Outline=true, Color=Cfg.ESP.TextColor, Visible=false}),
+        health = newD("Square", {Thickness=2, Filled=true, Color=Color3.fromRGB(60,255,60), Visible=false}),
+        healthBg = newD("Square", {Thickness=1, Filled=true, Color=Color3.fromRGB(30,30,30), Visible=false}),
+        tracer = newD("Line", {Thickness=1, Color=Cfg.ESP.TracerColor, Visible=false}),
+        arrow = newD("Triangle", {Thickness=1, Filled=true, Color=Cfg.ESP.ArrowColor, Visible=false}),
+        offArrow = newD("Triangle", {Thickness=1, Filled=true, Color=Cfg.ESP.ArrowColor, Visible=false}),
+        skeleton = skel,
     }
 end
 
@@ -378,14 +370,39 @@ local function setChams(p,on)
     end
 end
 
-addConn(RunService.RenderStepped:Connect(function()
+-- ============ RENDER LOOP (Bound to Camera for precision) ============
+local function RenderLogic()
     if not Running then return end
+    
+    -- Target Update
+    CachedTarget = Cfg.Aim.Enabled and findTarget() or nil
+
+    -- Auto Fire
+    if Cfg.Aim.AutoFire and CachedTarget and now()-LastAuto>=Cfg.Aim.AutoFireRate then
+        LastAuto=now()
+        pcall(function()
+            VirtualInputManager:SendMouseButtonEvent(0,0,0,true,game,0)
+            task.wait(0.01)
+            VirtualInputManager:SendMouseButtonEvent(0,0,0,false,game,0)
+        end)
+    end
+
+    -- FOV Ring
+    local vp = Camera.ViewportSize
+    FovCircle.Position = Vector2.new(vp.X/2, vp.Y/2)
+    FovCircle.Radius = Cfg.Aim.FOV
+    FovCircle.Color = Cfg.FOV.Color
+    FovCircle.Thickness = Cfg.FOV.Thickness
+    FovCircle.Filled = Cfg.FOV.Filled
+    FovCircle.Visible = Cfg.FOV.Enabled and Cfg.Aim.Enabled
+
+    -- ESP Update
     if not Cfg.ESP.Enabled then
         for _,e in pairs(ESPCache) do hideAll(e) end
         for p in pairs(ChamsInstances) do setChams(p,false) end
         return
     end
-    local vp=Camera.ViewportSize
+    
     local lpHRP = getHRP(LP)
     for _,p in ipairs(Players:GetPlayers()) do
         local e=ensureEntry(p)
@@ -518,7 +535,8 @@ addConn(RunService.RenderStepped:Connect(function()
     for p in pairs(ChamsInstances) do
         if not Cfg.ESP.Enabled or not Cfg.ESP.Chams then setChams(p,false) end
     end
-end))
+end
+RunService:BindToRenderStep("WT_Render", Enum.RenderPriority.Camera.Value + 1, RenderLogic)
 
 -- ============ TELEPORT ============
 local function tpTo(pos, smooth)
@@ -611,7 +629,7 @@ Instance.new("UICorner",TitleBar).CornerRadius=UDim.new(0,10)
 
 local TitleLbl=Instance.new("TextLabel")
 TitleLbl.Size=UDim2.new(1,-140,1,0); TitleLbl.Position=UDim2.fromOffset(14,0)
-TitleLbl.BackgroundTransparency=1; TitleLbl.Text="WarTycoon v4  |  ollie"
+TitleLbl.BackgroundTransparency=1; TitleLbl.Text="WarTycoon v5  |  ollie"
 TitleLbl.TextColor3=Color3.fromRGB(220,220,230); TitleLbl.Font=Enum.Font.GothamBold
 TitleLbl.TextSize=14; TitleLbl.TextXAlignment=Enum.TextXAlignment.Left; TitleLbl.Parent=TitleBar
 
@@ -758,7 +776,8 @@ mkSlider(A,"FOV Radius",0,162,10,600,function() return Cfg.Aim.FOV end,function(
 mkSlider(A,"Predict Str",300,162,0,1,function() return Cfg.Aim.PredictStrength end,function(v) Cfg.Aim.PredictStrength=v end,true)
 mkSlider(A,"Jitter",0,196,0,0.5,function() return Cfg.Aim.Jitter end,function(v) Cfg.Aim.Jitter=v end,true)
 mkSlider(A,"AutoRate",300,196,0.02,0.5,function() return Cfg.Aim.AutoFireRate end,function(v) Cfg.Aim.AutoFireRate=v end,true)
-mkDropdown(A,"Hit Part",{"Head","HumanoidRootPart","Torso","UpperTorso"},function() return Cfg.Aim.HitPart end,function(v) Cfg.Aim.HitPart=v end,0,230)
+mkSlider(A,"Gravity Drop",0,230,0,0.5,function() return Cfg.Aim.GravityDrop end,function(v) Cfg.Aim.GravityDrop=v end,true)
+mkDropdown(A,"Hit Part",{"Head","HumanoidRootPart","Torso","UpperTorso"},function() return Cfg.Aim.HitPart end,function(v) Cfg.Aim.HitPart=v end,0,264)
 
 -- ESP page
 local E=Pages.ESP
@@ -803,10 +822,8 @@ TPdd.ScrollBarThickness=4; TPdd.CanvasSize=UDim2.new(0,0,0,0)
 TPdd.AutomaticCanvasSize=Enum.AutomaticSize.Y; TPdd.Parent=T
 Instance.new("UICorner",TPdd).CornerRadius=UDim.new(0,4)
 
-local tpButtons={}
 local function refreshTP()
     for _,c in ipairs(TPdd:GetChildren()) do if c:IsA("TextButton") then c:Destroy() end end
-    tpButtons={}
     local q=SearchBox.Text:lower()
     local list={}
     for _,p in ipairs(Players:GetPlayers()) do if p~=LP then table.insert(list,p) end end
@@ -862,6 +879,7 @@ local function unloadAll()
     Running=false
     removeHook()
     pcall(function() FovCircle:Remove() end)
+    RunService:UnbindFromRenderStep("WT_Render")
     for _,c in ipairs(Conns) do pcall(function() c:Disconnect() end) end
     for _,e in pairs(ESPCache) do destroyEntry(e) end
     for p in pairs(ChamsInstances) do setChams(p,false) end
@@ -872,4 +890,4 @@ UnloadBtn.MouseButton1Click:Connect(unloadAll)
 CloseBtn.MouseButton1Click:Connect(function() pcall(unloadAll) end)
 
 installHook()
-log("WarTycoon v4 loaded")
+log("WarTycoon v5 loaded")
