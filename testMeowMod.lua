@@ -1,5 +1,5 @@
--- Война Магнат | KizmoTek Studio | Delta (Android) | v3 | ollie
--- Multi-layer silent aim bypass + advanced ESP + smooth teleport + FOV ring
+-- Война Магнат | KizmoTek Studio | Delta (Android) | v4 | ollie
+-- Multi-layer bypass + advanced ESP + smooth teleport + FOV ring + complex logic
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -9,6 +9,7 @@ local TweenService = game:GetService("TweenService")
 local CoreGui = game:GetService("CoreGui")
 local Stats = game:GetService("Stats")
 local Lighting = game:GetService("Lighting")
+local VirtualInputManager = game:GetService("VirtualInputManager")
 
 local LP = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
@@ -21,7 +22,7 @@ local Cfg = {
         Resolver=true, Jitter=0.08, PingComp=true,
         FireDelayMin=0.008, FireDelayMax=0.022, AutoFire=false, AutoFireRate=0.12,
         MagicBullet=true, Humanize=true, CurveStrength=0.02,
-        Bypass={IndexHook=true, CFrameSpoof=true, MethodScramble=true, CameraJitter=true},
+        Bypass={IndexHook=true, CFrameSpoof=true, MethodScramble=true},
     },
     ESP = {
         Enabled=true, Box=true, Name=true, Distance=true, Health=true, HealthBar=true,
@@ -51,8 +52,9 @@ local LastAuto=0
 local LastTP=0
 local Locked=nil
 local CachedTarget=nil
+local HooksInstalled={}
 
-local function log(...) print("[WT v3]", ...) end
+local function log(...) print("[WT v4]", ...) end
 local function addConn(c) table.insert(Conns,c) return c end
 local function now() return tick() end
 
@@ -182,7 +184,7 @@ local function isFiring()
     return false
 end
 
--- ============ SILENT AIM (MULTI-LAYER) ============
+-- ============ SILENT AIM ============
 local function humanizeDir(dir)
     if not Cfg.Aim.Humanize then return dir end
     local s=Cfg.Aim.CurveStrength
@@ -194,7 +196,6 @@ local function buildRayArgs(method,args)
     local part=getHitPart(CachedTarget); if not part then return args end
     local aimPos = jitter(predictPos(CachedTarget, part))
 
-    -- Layer: CFrame spoof — сдвигаем origin на случайный малый вектор
     if Cfg.Aim.Bypass.CFrameSpoof and method=="Raycast" then
         local o=args[1]
         if typeof(o)=="Vector3" then
@@ -248,7 +249,6 @@ local function installHook()
     if ok then HookActive=true; log("namecall hook installed")
     else log("hook fail:",err) end
 
-    -- Layer: __index hook — защита от чтения флагов античитом
     if Cfg.Aim.Bypass.IndexHook then
         local ok2=pcall(function()
             OrigIndex = hookmetamethod(game,"__index",newcclosure(function(self,key)
@@ -275,10 +275,9 @@ addConn(RunService.RenderStepped:Connect(function()
     if Cfg.Aim.AutoFire and CachedTarget and now()-LastAuto>=Cfg.Aim.AutoFireRate then
         LastAuto=now()
         pcall(function()
-            local vim=game:GetService("VirtualInputManager")
-            vim:SendMouseButtonEvent(0,0,0,true,game,0)
+            VirtualInputManager:SendMouseButtonEvent(0,0,0,true,game,0)
             task.wait(0.01)
-            vim:SendMouseButtonEvent(0,0,0,false,game,0)
+            VirtualInputManager:SendMouseButtonEvent(0,0,0,false,game,0)
         end)
     end
 end))
@@ -310,25 +309,29 @@ end
 local function teamColorOf(p)
     if not Cfg.ESP.TeamColor then return Cfg.ESP.BoxColor end
     if p.Team then
-        pcall(function() return p.Team.TeamColor.Color end)
-        return p.Team and p.Team.TeamColor.Color or Cfg.ESP.BoxColor
+        local ok, c = pcall(function() return p.Team.TeamColor.Color end)
+        if ok and c then return c end
     end
     return Cfg.ESP.BoxColor
 end
 
 local function mkEntry()
+    local skel = {}
+    for i = 1, 10 do
+        skel[i] = newD("Line", {Thickness=1, Color=Cfg.ESP.TextColor, Visible=false})
+    end
     return {
-        box=newD("Square",{Thickness=1,Filled=false,Color=Cfg.ESP.BoxColor,Visible=false}),
-        boxGlow=newD("Square",{Thickness=4,Filled=false,Color=Cfg.ESP.BoxColor,Transparency=0.7,Visible=false}),
-        gradientTop=newD("Square",{Thickness=1,Filled=false,Color=Cfg.ESP.BoxColor,Visible=false}),
-        name=newD("Text",{Size=14,Center=true,Outline=true,Color=Cfg.ESP.TextColor,Visible=false}),
-        dist=newD("Text",{Size=12,Center=true,Outline=true,Color=Cfg.ESP.TextColor,Visible=false}),
-        health=newD("Square",{Thickness=2,Filled=true,Color=Color3.fromRGB(60,255,60),Visible=false}),
-        healthBg=newD("Square",{Thickness=1,Filled=true,Color=Color3.fromRGB(30,30,30),Visible=false}),
-        tracer=newD("Line",{Thickness=1,Color=Cfg.ESP.TracerColor,Visible=false}),
-        arrow=newD("Triangle",{Thickness=1,Filled=true,Color=Cfg.ESP.ArrowColor,Visible=false}),
-        offArrow=newD("Triangle",{Thickness=1,Filled=true,Color=Cfg.ESP.ArrowColor,Visible=false}),
-        skeleton={for i=1,10 do newD("Line",{Thickness=1,Color=Cfg.ESP.TextColor,Visible=false}) end},
+        box        = newD("Square",  {Thickness=1, Filled=false, Color=Cfg.ESP.BoxColor, Visible=false}),
+        boxGlow    = newD("Square",  {Thickness=4, Filled=false, Color=Cfg.ESP.BoxColor, Transparency=0.7, Visible=false}),
+        gradientTop= newD("Square",  {Thickness=1, Filled=false, Color=Cfg.ESP.BoxColor, Visible=false}),
+        name       = newD("Text",    {Size=14, Center=true, Outline=true, Color=Cfg.ESP.TextColor, Visible=false}),
+        dist       = newD("Text",    {Size=12, Center=true, Outline=true, Color=Cfg.ESP.TextColor, Visible=false}),
+        health     = newD("Square",  {Thickness=2, Filled=true, Color=Color3.fromRGB(60,255,60), Visible=false}),
+        healthBg   = newD("Square",  {Thickness=1, Filled=true, Color=Color3.fromRGB(30,30,30), Visible=false}),
+        tracer     = newD("Line",    {Thickness=1, Color=Cfg.ESP.TracerColor, Visible=false}),
+        arrow      = newD("Triangle",{Thickness=1, Filled=true, Color=Cfg.ESP.ArrowColor, Visible=false}),
+        offArrow   = newD("Triangle",{Thickness=1, Filled=true, Color=Cfg.ESP.ArrowColor, Visible=false}),
+        skeleton   = skel,
     }
 end
 
@@ -383,6 +386,7 @@ addConn(RunService.RenderStepped:Connect(function()
         return
     end
     local vp=Camera.ViewportSize
+    local lpHRP = getHRP(LP)
     for _,p in ipairs(Players:GetPlayers()) do
         local e=ensureEntry(p)
         if p==LP then hideAll(e) continue end
@@ -482,7 +486,6 @@ addConn(RunService.RenderStepped:Connect(function()
                 end
             else for _,s in ipairs(e.skeleton) do s.Visible=false end end
         else
-            -- offscreen arrow
             for k,d in pairs(e) do
                 if k=="skeleton" then for _,s in ipairs(d) do s.Visible=false end
                 else d.Visible=false end
@@ -510,7 +513,6 @@ addConn(RunService.RenderStepped:Connect(function()
                 end
             end
         end
-
         if Cfg.ESP.Chams and Cfg.ESP.Enabled then setChams(p,true) else setChams(p,false) end
     end
     for p in pairs(ChamsInstances) do
@@ -522,7 +524,6 @@ end))
 local function tpTo(pos, smooth)
     local hrp=getHRP(LP); if not hrp then return end
     if Cfg.Teleport.SafeLand then
-        -- проверяем поверхность под целевой точкой
         local params=RaycastParams.new()
         params.FilterType=Enum.RaycastFilterType.Exclude
         params.FilterDescendantsInstances={LP.Character}
@@ -530,7 +531,6 @@ local function tpTo(pos, smooth)
         if r then pos = r.Position + Vector3.new(0,3,0) end
     end
     if smooth and Cfg.Teleport.Smooth then
-        local from=hrp.CFrame
         local to=CFrame.new(pos+Vector3.new(0,3,0))
         local tween=TweenService:Create(hrp, TweenInfo.new(Cfg.Teleport.SmoothTime, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {CFrame=to})
         tween:Play()
@@ -547,7 +547,6 @@ local function tpToPlayer(p)
     if not hrp then return false end
     local pos=hrp.Position
     if Cfg.Teleport.Behind then
-        -- позиция за спиной цели (по LookVector цели)
         pos = pos - hrp.CFrame.LookVector * 3
     end
     tpTo(pos, true)
@@ -612,7 +611,7 @@ Instance.new("UICorner",TitleBar).CornerRadius=UDim.new(0,10)
 
 local TitleLbl=Instance.new("TextLabel")
 TitleLbl.Size=UDim2.new(1,-140,1,0); TitleLbl.Position=UDim2.fromOffset(14,0)
-TitleLbl.BackgroundTransparency=1; TitleLbl.Text="WarTycoon v3  |  ollie"
+TitleLbl.BackgroundTransparency=1; TitleLbl.Text="WarTycoon v4  |  ollie"
 TitleLbl.TextColor3=Color3.fromRGB(220,220,230); TitleLbl.Font=Enum.Font.GothamBold
 TitleLbl.TextSize=14; TitleLbl.TextXAlignment=Enum.TextXAlignment.Left; TitleLbl.Parent=TitleBar
 
@@ -815,7 +814,8 @@ local function refreshTP()
     for i,p in ipairs(list) do
         if q=="" or p.Name:lower():find(q,1,true) then
             local hrp=getHRP(p)
-            local dist = hrp and math.floor((hrp.Position-LP.Character and LP.Character:FindFirstChild("HumanoidRootPart") and LP.Character.HumanoidRootPart.Position or Vector3.new()).Magnitude) or 0
+            local myHRP = getHRP(LP)
+            local dist = (hrp and myHRP) and math.floor((hrp.Position-myHRP.Position).Magnitude) or 0
             local isFriend = false
             pcall(function() isFriend = LP:IsFriendsWith(p.UserId) end)
             local b=Instance.new("TextButton")
@@ -872,4 +872,4 @@ UnloadBtn.MouseButton1Click:Connect(unloadAll)
 CloseBtn.MouseButton1Click:Connect(function() pcall(unloadAll) end)
 
 installHook()
-log("WarTycoon v3 loaded")
+log("WarTycoon v4 loaded")
