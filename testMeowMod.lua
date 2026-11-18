@@ -1,5 +1,5 @@
--- Война Магнат | KizmoTek Studio | Delta (Android) | v5 | ollie
--- Advanced rawmetatable bypass + projectile prediction + smart ESP + smooth teleport
+-- Война Магнат | KizmoTek Studio | Delta (Android) | v6 | ollie
+-- Strict FOV % Silent Aim (Raw Metatable) + Advanced ESP + Safe TP + Clean UI
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -8,20 +8,18 @@ local UIS = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
 local CoreGui = game:GetService("CoreGui")
 local Stats = game:GetService("Stats")
-local VirtualInputManager = game:GetService("VirtualInputManager")
 
 local LP = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
+local PG = LP:WaitForChild("PlayerGui")
 
 -- ============ CONFIG ============
 local Cfg = {
     Aim = {
-        Enabled=true, FOV=150, TeamCheck=true, FriendCheck=true, WallCheck=false,
-        HitPart="Head", Predict=true, PredictStrength=0.165, PredictMax=0.35,
-        Resolver=true, Jitter=0.08, PingComp=true, GravityDrop=0.0,
-        FireDelayMin=0.008, FireDelayMax=0.022, AutoFire=false, AutoFireRate=0.12,
-        MagicBullet=true, Humanize=true, CurveStrength=0.02,
-        Bypass={IndexHook=true, CFrameSpoof=true, MethodScramble=true},
+        Enabled = false,
+        FOVPercent = 25, -- Strict FOV based on screen height
+        MaxDistance = 5000,
+        ShowFOV = true,
     },
     ESP = {
         Enabled=true, Box=true, Name=true, Distance=true, Health=true, HealthBar=true,
@@ -31,29 +29,30 @@ local Cfg = {
         TracerColor=Color3.fromRGB(255,60,60), ChamsColor=Color3.fromRGB(255,80,80),
         ChamsTransparency=0.35, ArrowColor=Color3.fromRGB(255,200,40),
     },
-    FOV = { Enabled=true, Color=Color3.fromRGB(120,220,140), Thickness=1.5, Filled=false },
+    FOVColor = Color3.fromRGB(120, 220, 140),
     Teleport = {
         Target=nil, Offset=Vector3.new(0,0,3), Smooth=true, SmoothTime=0.25,
         SafeLand=true, Behind=true, Cooldown=1.2,
     },
-    Misc = { AntiFling=true, AntiVoid=true, NoClip=false, FPSBoost=false },
+    Misc = { AntiFling=true, AntiVoid=true, NoClip=false },
 }
 
 -- ============ STATE ============
 local Running=true
 local Conns={}
 local ESPCache={}
-local Tracks={}
 local HookActive=false
-local OrigNamecall, OrigIndex=nil
-local LastShot=0
-local LastAuto=0
+local OldNamecall=nil
 local LastTP=0
 local Locked=nil
-local CachedTarget=nil
-local IsShooting=false
 
-local function log(...) print("[WT v5]", ...) end
+-- Aim State
+local SilentTarget = nil
+local IsShooting = false
+local SilentActive = false
+local CachedTarget = nil
+
+local function log(...) print("[WT v6]", ...) end
 local function addConn(c) table.insert(Conns,c) return c end
 local function now() return tick() end
 
@@ -61,115 +60,55 @@ local function now() return tick() end
 local function getChar(p) return p and p.Character end
 local function getHum(p) local c=getChar(p) return c and c:FindFirstChildOfClass("Humanoid") end
 local function getHRP(p) local c=getChar(p) return c and c:FindFirstChild("HumanoidRootPart") end
-
-local function getPing()
-    local ok, p = pcall(function() return Stats.Network.ServerStatsItem["Data Ping"]:GetValue() end)
-    if ok and p then return p/1000 end
-    return 0.05
-end
+local function getHead(p) local c=getChar(p) return c and c:FindFirstChild("Head") end
 
 local function isEnemy(p)
     if p==LP then return false end
     local h=getHum(p); if not h or h.Health<=0 then return false end
-    if Cfg.Aim.TeamCheck and p.Team and LP.Team and p.Team==LP.Team then return false end
-    if Cfg.Aim.FriendCheck then
-        local ok,r=pcall(function() return LP:IsFriendsWith(p.UserId) end)
-        if ok and r then return false end
-    end
+    if p.Team and LP.Team and p.Team==LP.Team then return false end
+    local ok,r=pcall(function() return LP:IsFriendsWith(p.UserId) end)
+    if ok and r then return false end
     return true
 end
 
-local function getHitPart(p, prefer)
-    local c=getChar(p); if not c then return nil end
-    return c:FindFirstChild(prefer or Cfg.Aim.HitPart) or c:FindFirstChild("Head") or c:FindFirstChild("HumanoidRootPart")
+-- ============ AIM LOGIC (MeowMod Strict FOV) ============
+local function GetFovRadiusPx()
+    return (Camera.ViewportSize.Y / 2) * (Cfg.Aim.FOVPercent / 100)
 end
 
--- ============ TRACKER (Deep Prediction) ============
-addConn(RunService.Heartbeat:Connect(function()
-    if not Running then return end
-    for _,p in ipairs(Players:GetPlayers()) do
-        if p~=LP then
-            local hrp=getHRP(p); local t=Tracks[p] or {hist={}}
-            if hrp then
-                local n=now()
-                if t.last then
-                    local dt=n-t.last
-                    if dt>0.001 then t.vel=(hrp.Position-t.pos)/dt end
-                end
-                t.pos=hrp.Position; t.last=n
-                table.insert(t.hist,{pos=hrp.Position,t=n})
-                if #t.hist>15 then table.remove(t.hist,1) end
-            end
-            Tracks[p]=t
-        end
-    end
-    for p in pairs(Tracks) do if not p.Parent then Tracks[p]=nil end end
-end))
-
-local function predictPos(p, part)
-    local t=Tracks[p]; local base=part.Position
-    if not Cfg.Aim.Predict or not t or not t.vel then return base end
-    local hrp=getHRP(p)
-    local dist = hrp and (Camera.CFrame.Position - hrp.Position).Magnitude or 100
-    local ping = Cfg.Aim.PingComp and getPing() or 0.05
-    local baseT = Cfg.Aim.PredictStrength * (dist/100)
-    local travel = math.clamp(baseT + ping, 0, Cfg.Aim.PredictMax)
-    
-    local pred = base + t.vel * travel
-    
-    -- Gravity drop compensation (for projectiles)
-    if Cfg.Aim.GravityDrop > 0 then
-        pred = pred - Vector3.new(0, Cfg.Aim.GravityDrop * (travel^2), 0)
-    end
-
-    -- Resolver: stabilize erratic movement
-    if Cfg.Aim.Resolver and #(t.hist or {})>=5 then
-        local hist=t.hist; local avgV=Vector3.new()
-        for i=2,#hist do
-            local dt=hist[i].t-hist[i-1].t
-            if dt>0.001 then avgV += (hist[i].pos-hist[i-1].pos)/dt end
-        end
-        avgV = avgV/(#hist-1)
-        local var=(t.vel-avgV).Magnitude
-        if var > 45 then -- jitter detected
-            pred = base + (avgV*0.7 + t.vel*0.3) * travel
-        end
-    end
-    return pred
+local function IsStrictlyInFov(head)
+    local sp, on = Camera:WorldToViewportPoint(head.Position)
+    if not on or sp.Z < 0 then return false, 0 end
+    local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
+    local targetPos = Vector2.new(sp.X, sp.Y)
+    local d2 = (targetPos - screenCenter).Magnitude
+    local radius = GetFovRadiusPx()
+    return d2 <= radius, d2
 end
 
-local function jitter(v)
-    local j=Cfg.Aim.Jitter
-    return v + Vector3.new((math.random()-0.5)*j,(math.random()-0.5)*j,(math.random()-0.5)*j)
-end
-
--- ============ TARGET ============
-local function screenDist(part)
-    local sp,on=Camera:WorldToViewportPoint(part.Position)
-    if not on then return math.huge end
-    local vp=Camera.ViewportSize; local c=Vector2.new(vp.X/2,vp.Y/2)
-    return (Vector2.new(sp.X,sp.Y)-c).Magnitude
-end
-
-local function rayVisible(from,to)
-    local p=RaycastParams.new()
-    p.FilterType=Enum.RaycastFilterType.Exclude
-    p.FilterDescendantsInstances={LP.Character,Camera}
-    return Workspace:Raycast(from,to-from,p)==nil
-end
-
-local function findTarget()
+local function GetTarget()
     if Locked and Locked.Parent and isEnemy(Locked) then return Locked end
-    local best,bestD=nil,math.huge; local cp=Camera.CFrame.Position
-    for _,p in ipairs(Players:GetPlayers()) do
+    local myChar = LP.Character
+    local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
+    local myHum = myChar and myChar:FindFirstChildOfClass("Humanoid")
+    if not myHrp or not myHum or myHum.Health <= 0 then return nil end
+    
+    local myPos = myHrp.Position
+    local best, bestDistPx = nil, math.huge
+    
+    for _, p in pairs(Players:GetPlayers()) do
         if isEnemy(p) then
-            local part=getHitPart(p)
-            if part then
-                local d=screenDist(part)
-                if d<Cfg.Aim.FOV and d<bestD then
-                    if Cfg.Aim.WallCheck then
-                        if rayVisible(cp,part.Position) then best,bestD=p,d end
-                    else best,bestD=p,d end
+            local head = getHead(p)
+            local hrp = getHRP(p)
+            local hum = getHum(p)
+            if head and hrp and hum then
+                local d3 = (myPos - head.Position).Magnitude
+                if d3 <= Cfg.Aim.MaxDistance then
+                    local inFov, distPx = IsStrictlyInFov(head)
+                    if inFov and distPx < bestDistPx then
+                        bestDistPx = distPx
+                        best = head
+                    end
                 end
             end
         end
@@ -177,98 +116,57 @@ local function findTarget()
     return best
 end
 
--- ============ FIRING ============
-addConn(UIS.InputBegan:Connect(function(i,gp)
+addConn(UIS.InputBegan:Connect(function(inp, gp)
     if gp then return end
-    if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then IsShooting=true end
-end))
-addConn(UIS.InputEnded:Connect(function(i,gp)
-    if gp then return end
-    if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then IsShooting=false end
+    if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then
+        IsShooting = true
+    end
 end))
 
--- ============ RAW METATABLE SILENT AIM ============
-local function humanizeDir(dir)
-    if not Cfg.Aim.Humanize then return dir end
-    local s=Cfg.Aim.CurveStrength
-    return dir + Vector3.new(math.random()-0.5, math.random()-0.5, math.random()-0.5)*s
-end
-
-local function processArgs(method, args, target)
-    if not target then return args end
-    local part=getHitPart(target); if not part then return args end
-    local aimPos = jitter(predictPos(target, part))
-
-    if Cfg.Aim.Bypass.CFrameSpoof and method=="Raycast" then
-        local o=args[1]
-        if typeof(o)=="Vector3" then
-            args[1] = o + Vector3.new(math.random()-0.5, math.random()-0.5, math.random()-0.5)*0.02
-        end
+addConn(UIS.InputEnded:Connect(function(inp, gp)
+    if gp then return end
+    if inp.UserInputType == Enum.UserInputType.MouseButton1 or inp.UserInputType == Enum.UserInputType.Touch then
+        IsShooting = false
     end
+end))
 
-    if method=="Raycast" then
-        local origin=args[1]
-        local dir=aimPos-origin
-        if dir.Magnitude<0.05 then return args end
-        args[2]=humanizeDir(dir)
-        if Cfg.Aim.MagicBullet and typeof(args[4])=="RaycastParams" then
-            pcall(function()
-                args[4].FilterType=Enum.RaycastFilterType.Exclude
-                args[4].FilterDescendantsInstances={LP.Character,Camera,target.Character}
-            end)
-        end
-        return args
-    elseif method=="FindPartOnRay" or method=="FindPartOnRayWithIgnoreList" or method=="FindPartOnRayWithWhitelist" then
-        local ray=args[1]
-        if typeof(ray)=="Ray" then
-            local d=aimPos-ray.Origin
-            if d.Magnitude<0.05 then return args end
-            args[1]=Ray.new(ray.Origin, humanizeDir(d))
-        end
-        return args
-    end
-    return args
+-- Bypass / Hook (Raw Metatable)
+local function GetBypassOffset()
+    return Vector3.new((math.random() - 0.5) * 0.1, (math.random() - 0.5) * 0.1, (math.random() - 0.5) * 0.1)
 end
 
 local function installHook()
     if HookActive then return end
-    
-    -- Use rawmetatable for extreme reliability in Delta
-    local ok,err=pcall(function()
+    local ok, err = pcall(function()
         local mt = getrawmetatable(game)
-        local oldNC = mt.__namecall
+        OldNamecall = mt.__namecall
         setreadonly(mt, false)
         
         mt.__namecall = newcclosure(function(self, ...)
-            if Running and Cfg.Aim.Enabled and CachedTarget and IsShooting then
+            if SilentActive and SilentTarget and SilentTarget.Parent and IsShooting then
                 local m = getnamecallmethod()
-                if m=="Raycast" or m=="FindPartOnRay" or m=="FindPartOnRayWithIgnoreList" or m=="FindPartOnRayWithWhitelist" then
-                    local t=now()
-                    local delay=Cfg.Aim.FireDelayMin + math.random()*(Cfg.Aim.FireDelayMax-Cfg.Aim.FireDelayMin)
-                    if t-LastShot >= delay then
-                        LastShot=t
-                        local args={...}
-                        args=processArgs(m, args, CachedTarget)
-                        return oldNC(self, unpack(args))
+                local offset = GetBypassOffset()
+                local args = {...}
+                
+                if m == "Raycast" then
+                    if typeof(args[1]) == "Vector3" then
+                        args[2] = (SilentTarget.Position + offset) - args[1]
                     end
+                    return OldNamecall(self, unpack(args))
+                elseif m == "FindPartOnRay" or m == "FindPartOnRayWithIgnoreList" then
+                    if typeof(args[1]) == "Ray" then
+                        args[1] = Ray.new(args[1].Origin, (SilentTarget.Position + offset) - args[1].Origin)
+                    end
+                    return OldNamecall(self, unpack(args))
                 end
             end
-            return oldNC(self, ...)
+            return OldNamecall(self, ...)
         end)
-        
-        if Cfg.Aim.Bypass.IndexHook then
-            OrigIndex = mt.__index
-            mt.__index = newcclosure(function(self,key)
-                if key=="Name" and self==LP.Character then return "LocalPlayer" end
-                return OrigIndex(self,key)
-            end)
-        end
         
         setreadonly(mt, true)
     end)
-    
-    if ok then HookActive=true; log("Raw namecall hook installed")
-    else log("hook fail:",err) end
+    if ok then HookActive = true; log("Raw __namecall hook installed.")
+    else log("Hook fail:", err) end
 end
 
 local function removeHook()
@@ -276,22 +174,26 @@ local function removeHook()
     pcall(function()
         local mt = getrawmetatable(game)
         setreadonly(mt, false)
-        mt.__namecall = OrigNamecall
-        if OrigIndex then mt.__index = OrigIndex end
+        mt.__namecall = OldNamecall
         setreadonly(mt, true)
     end)
-    HookActive=false
-    log("hooks removed")
+    HookActive = false
 end
 
 -- ============ FOV RING ============
 local FovCircle = Drawing.new("Circle")
-FovCircle.Thickness = Cfg.FOV.Thickness
-FovCircle.Color = Cfg.FOV.Color
+FovCircle.Thickness = 1.5
+FovCircle.Color = Cfg.FOVColor
 FovCircle.Filled = false
 FovCircle.NumSides = 64
-FovCircle.Transparency = 0.6
+FovCircle.Transparency = 0.8
 FovCircle.Visible = false
+
+local SilentLine = Drawing.new("Line")
+SilentLine.Thickness = 1
+SilentLine.Color = Cfg.FOVColor
+SilentLine.Transparency = 0.5
+SilentLine.Visible = false
 
 -- ============ ESP ============
 local function newD(class,props)
@@ -345,7 +247,6 @@ end
 
 addConn(Players.PlayerRemoving:Connect(function(p)
     if ESPCache[p] then destroyEntry(ESPCache[p]); ESPCache[p]=nil end
-    Tracks[p]=nil
     if Cfg.Teleport.Target==p then Cfg.Teleport.Target=nil end
 end))
 
@@ -370,40 +271,47 @@ local function setChams(p,on)
     end
 end
 
--- ============ RENDER LOOP (Bound to Camera for precision) ============
+-- ============ RENDER LOOP ============
 local function RenderLogic()
     if not Running then return end
     
-    -- Target Update
-    CachedTarget = Cfg.Aim.Enabled and findTarget() or nil
-
-    -- Auto Fire
-    if Cfg.Aim.AutoFire and CachedTarget and now()-LastAuto>=Cfg.Aim.AutoFireRate then
-        LastAuto=now()
-        pcall(function()
-            VirtualInputManager:SendMouseButtonEvent(0,0,0,true,game,0)
-            task.wait(0.01)
-            VirtualInputManager:SendMouseButtonEvent(0,0,0,false,game,0)
-        end)
+    -- 1. AIM LOGIC
+    if Cfg.Aim.Enabled and IsShooting then
+        CachedTarget = GetTarget()
+        SilentTarget = CachedTarget
+        SilentActive = SilentTarget ~= nil
+        
+        if SilentActive then
+            local sp, on = Camera:WorldToViewportPoint(SilentTarget.Position)
+            if on then
+                SilentLine.From = Vector2.new(Camera.ViewportSize.X/2, Camera.ViewportSize.Y/2)
+                SilentLine.To = Vector2.new(sp.X, sp.Y)
+                SilentLine.Visible = true
+            else
+                SilentLine.Visible = false
+            end
+        else
+            SilentLine.Visible = false
+        end
+    else
+        SilentTarget = nil
+        SilentActive = false
+        SilentLine.Visible = false
     end
 
-    -- FOV Ring
+    -- 2. FOV CIRCLE
     local vp = Camera.ViewportSize
     FovCircle.Position = Vector2.new(vp.X/2, vp.Y/2)
-    FovCircle.Radius = Cfg.Aim.FOV
-    FovCircle.Color = Cfg.FOV.Color
-    FovCircle.Thickness = Cfg.FOV.Thickness
-    FovCircle.Filled = Cfg.FOV.Filled
-    FovCircle.Visible = Cfg.FOV.Enabled and Cfg.Aim.Enabled
+    FovCircle.Radius = GetFovRadiusPx()
+    FovCircle.Visible = Cfg.Aim.Enabled and Cfg.Aim.ShowFOV
 
-    -- ESP Update
+    -- 3. ESP LOGIC
     if not Cfg.ESP.Enabled then
         for _,e in pairs(ESPCache) do hideAll(e) end
         for p in pairs(ChamsInstances) do setChams(p,false) end
         return
     end
     
-    local lpHRP = getHRP(LP)
     for _,p in ipairs(Players:GetPlayers()) do
         local e=ensureEntry(p)
         if p==LP then hideAll(e) continue end
@@ -577,8 +485,7 @@ if Cfg.Misc.AntiFling then
     addConn(RunService.Heartbeat:Connect(function()
         if not Running then return end
         local hrp=getHRP(LP); if not hrp then return end
-        local v=hrp.AssemblyLinearVelocity
-        if v.Magnitude>500 then hrp.AssemblyLinearVelocity=Vector3.new() end
+        if hrp.AssemblyLinearVelocity.Magnitude>500 then hrp.AssemblyLinearVelocity=Vector3.new() end
     end))
 end
 
@@ -600,16 +507,6 @@ if Cfg.Misc.NoClip then
     end))
 end
 
-if Cfg.Misc.FPSBoost then
-    pcall(function()
-        settings().Rendering.QualityLevel=Enum.QualityLevel.Level01
-        for _,v in ipairs(Workspace:GetDescendants()) do
-            if v:IsA("ParticleEmitter") or v:IsA("Smoke") or v:IsA("Fire") or v:IsA("Sparkles") then v.Enabled=false end
-        end
-        Lighting.GlobalShadows=false; Lighting.FogEnd=9e9
-    end)
-end
-
 -- ============ UI ============
 local oldGui=CoreGui:FindFirstChild("WarTycoonUI"); if oldGui then oldGui:Destroy() end
 local SG=Instance.new("ScreenGui"); SG.Name="WarTycoonUI"; SG.ResetOnSpawn=false
@@ -629,7 +526,7 @@ Instance.new("UICorner",TitleBar).CornerRadius=UDim.new(0,10)
 
 local TitleLbl=Instance.new("TextLabel")
 TitleLbl.Size=UDim2.new(1,-140,1,0); TitleLbl.Position=UDim2.fromOffset(14,0)
-TitleLbl.BackgroundTransparency=1; TitleLbl.Text="WarTycoon v5  |  ollie"
+TitleLbl.BackgroundTransparency=1; TitleLbl.Text="WarTycoon v6  |  ollie"
 TitleLbl.TextColor3=Color3.fromRGB(220,220,230); TitleLbl.Font=Enum.Font.GothamBold
 TitleLbl.TextSize=14; TitleLbl.TextXAlignment=Enum.TextXAlignment.Left; TitleLbl.Parent=TitleBar
 
@@ -703,6 +600,7 @@ local function mkToggle(parent,label,get,set,x,y)
     return b
 end
 
+-- FIXED SLIDER (Stops UI dragging when adjusting)
 local function mkSlider(parent,label,x,y,minV,maxV,get,set,isFloat)
     local holder=Instance.new("Frame"); holder.Size=UDim2.fromOffset(285,30)
     holder.Position=UDim2.fromOffset(x,y); holder.BackgroundTransparency=1; holder.Parent=parent
@@ -710,15 +608,32 @@ local function mkSlider(parent,label,x,y,minV,maxV,get,set,isFloat)
     lbl.BackgroundTransparency=1; lbl.TextColor3=Color3.fromRGB(220,220,230)
     lbl.Font=Enum.Font.Gotham; lbl.TextSize=11; lbl.TextXAlignment=Enum.TextXAlignment.Left
     lbl.Text=label..": "..tostring(get()); lbl.Parent=holder
+    
     local bar=Instance.new("Frame"); bar.Size=UDim2.new(1,0,0,7); bar.Position=UDim2.fromOffset(0,16)
     bar.BackgroundColor3=Color3.fromRGB(36,36,46); bar.BorderSizePixel=0; bar.Parent=holder
     Instance.new("UICorner",bar).CornerRadius=UDim.new(0,3)
     local fill=Instance.new("Frame"); fill.Size=UDim2.new((get()-minV)/(maxV-minV),0,1,0)
     fill.BackgroundColor3=Color3.fromRGB(120,220,140); fill.BorderSizePixel=0; fill.Parent=bar
     Instance.new("UICorner",fill).CornerRadius=UDim.new(0,3)
+    
+    -- Invisible hitbox over the slider to intercept touches and prevent window dragging
+    local hit = Instance.new("TextButton")
+    hit.Size = UDim2.new(1, 0, 4, 0); hit.Position = UDim2.new(0, 0, -1.5, 0)
+    hit.BackgroundTransparency = 1; hit.Text = ""; hit.Parent = bar
+    
     local drag=false
-    bar.InputBegan:Connect(function(i) if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then drag=true end end)
-    UIS.InputEnded:Connect(function(i) if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then drag=false end end)
+    hit.InputBegan:Connect(function(i) 
+        if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then 
+            drag=true 
+            Main.Active = false -- disable dragging the main window while sliding
+        end 
+    end)
+    UIS.InputEnded:Connect(function(i) 
+        if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then 
+            drag=false 
+            Main.Active = true  -- re-enable window dragging
+        end 
+    end)
     UIS.InputChanged:Connect(function(i)
         if drag and (i.UserInputType==Enum.UserInputType.MouseMovement or i.UserInputType==Enum.UserInputType.Touch) then
             local rel=math.clamp((i.Position.X-bar.AbsolutePosition.X)/bar.AbsoluteSize.X,0,1)
@@ -756,28 +671,12 @@ local function mkDropdown(parent,label,options,get,set,x,y)
     return btn
 end
 
--- AIM page
+-- AIM page (Stripped down to MeowMod essentials)
 local A=Pages.Aim
 mkToggle(A,"Silent Aim",function() return Cfg.Aim.Enabled end,function(v) Cfg.Aim.Enabled=v end,0,0)
-mkToggle(A,"Team Check",function() return Cfg.Aim.TeamCheck end,function(v) Cfg.Aim.TeamCheck=v end,192,0)
-mkToggle(A,"Friend Check",function() return Cfg.Aim.FriendCheck end,function(v) Cfg.Aim.FriendCheck=v end,384,0)
-mkToggle(A,"Wall Check",function() return Cfg.Aim.WallCheck end,function(v) Cfg.Aim.WallCheck=v end,0,32)
-mkToggle(A,"Predict",function() return Cfg.Aim.Predict end,function(v) Cfg.Aim.Predict=v end,192,32)
-mkToggle(A,"Resolver",function() return Cfg.Aim.Resolver end,function(v) Cfg.Aim.Resolver=v end,384,32)
-mkToggle(A,"Ping Comp",function() return Cfg.Aim.PingComp end,function(v) Cfg.Aim.PingComp=v end,0,64)
-mkToggle(A,"Magic Bullet",function() return Cfg.Aim.MagicBullet end,function(v) Cfg.Aim.MagicBullet=v end,192,64)
-mkToggle(A,"Humanize",function() return Cfg.Aim.Humanize end,function(v) Cfg.Aim.Humanize=v end,384,64)
-mkToggle(A,"Auto Fire",function() return Cfg.Aim.AutoFire end,function(v) Cfg.Aim.AutoFire=v end,0,96)
-mkToggle(A,"Idx Bypass",function() return Cfg.Aim.Bypass.IndexHook end,function(v) Cfg.Aim.Bypass.IndexHook=v end,192,96)
-mkToggle(A,"CFrame Spoof",function() return Cfg.Aim.Bypass.CFrameSpoof end,function(v) Cfg.Aim.Bypass.CFrameSpoof=v end,384,96)
-mkToggle(A,"FOV Ring",function() return Cfg.FOV.Enabled end,function(v) Cfg.FOV.Enabled=v end,0,128)
-mkToggle(A,"FOV Fill",function() return Cfg.FOV.Filled end,function(v) Cfg.FOV.Filled=v end,192,128)
-mkSlider(A,"FOV Radius",0,162,10,600,function() return Cfg.Aim.FOV end,function(v) Cfg.Aim.FOV=v end)
-mkSlider(A,"Predict Str",300,162,0,1,function() return Cfg.Aim.PredictStrength end,function(v) Cfg.Aim.PredictStrength=v end,true)
-mkSlider(A,"Jitter",0,196,0,0.5,function() return Cfg.Aim.Jitter end,function(v) Cfg.Aim.Jitter=v end,true)
-mkSlider(A,"AutoRate",300,196,0.02,0.5,function() return Cfg.Aim.AutoFireRate end,function(v) Cfg.Aim.AutoFireRate=v end,true)
-mkSlider(A,"Gravity Drop",0,230,0,0.5,function() return Cfg.Aim.GravityDrop end,function(v) Cfg.Aim.GravityDrop=v end,true)
-mkDropdown(A,"Hit Part",{"Head","HumanoidRootPart","Torso","UpperTorso"},function() return Cfg.Aim.HitPart end,function(v) Cfg.Aim.HitPart=v end,0,264)
+mkToggle(A,"Show FOV Ring",function() return Cfg.Aim.ShowFOV end,function(v) Cfg.Aim.ShowFOV=v end,192,0)
+mkSlider(A,"FOV %",0,50,5,100,function() return Cfg.Aim.FOVPercent end,function(v) Cfg.Aim.FOVPercent=v end)
+mkSlider(A,"Max Dist",0,90,500,5000,function() return Cfg.Aim.MaxDistance end,function(v) Cfg.Aim.MaxDistance=v end)
 
 -- ESP page
 local E=Pages.ESP
@@ -865,7 +764,6 @@ local M=Pages.Misc
 mkToggle(M,"Anti Fling",function() return Cfg.Misc.AntiFling end,function(v) Cfg.Misc.AntiFling=v end,0,0)
 mkToggle(M,"Anti Void",function() return Cfg.Misc.AntiVoid end,function(v) Cfg.Misc.AntiVoid=v end,192,0)
 mkToggle(M,"NoClip",function() return Cfg.Misc.NoClip end,function(v) Cfg.Misc.NoClip=v end,384,0)
-mkToggle(M,"FPS Boost",function() return Cfg.Misc.FPSBoost end,function(v) Cfg.Misc.FPSBoost=v end,0,32)
 
 -- UI buttons
 local minimized=false
@@ -879,6 +777,7 @@ local function unloadAll()
     Running=false
     removeHook()
     pcall(function() FovCircle:Remove() end)
+    pcall(function() SilentLine:Remove() end)
     RunService:UnbindFromRenderStep("WT_Render")
     for _,c in ipairs(Conns) do pcall(function() c:Disconnect() end) end
     for _,e in pairs(ESPCache) do destroyEntry(e) end
@@ -890,4 +789,4 @@ UnloadBtn.MouseButton1Click:Connect(unloadAll)
 CloseBtn.MouseButton1Click:Connect(function() pcall(unloadAll) end)
 
 installHook()
-log("WarTycoon v5 loaded")
+log("WarTycoon v6 loaded")
