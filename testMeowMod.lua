@@ -1,5 +1,5 @@
--- Война Магнат | KizmoTek Studio | Delta (Android) | v6 | ollie
--- Strict FOV % Silent Aim (Raw Metatable) + Advanced ESP + Safe TP + Clean UI
+-- Война Магнат | KizmoTek Studio | Delta (Android) | v7 | ollie
+-- Strict FOV % (Body Priority) + Master ESP + Base TP + Clean UI
 
 local Players = game:GetService("Players")
 local RunService = game:GetService("RunService")
@@ -8,51 +8,50 @@ local UIS = game:GetService("UserInputService")
 local TweenService = game:GetService("TweenService")
 local CoreGui = game:GetService("CoreGui")
 local Stats = game:GetService("Stats")
+local HttpService = game:GetService("HttpService")
 
 local LP = Players.LocalPlayer
 local Camera = Workspace.CurrentCamera
-local PG = LP:WaitForChild("PlayerGui")
 
 -- ============ CONFIG ============
 local Cfg = {
     Aim = {
         Enabled = false,
-        FOVPercent = 25, -- Strict FOV based on screen height
+        FOVPercent = 25,
         MaxDistance = 5000,
         ShowFOV = true,
     },
     ESP = {
-        Enabled=true, Box=true, Name=true, Distance=true, Health=true, HealthBar=true,
-        Tracer=true, TracerOrigin="Bottom", Skeleton=false, Chams=false, Arrow=false,
-        OffscreenArrow=true, GradientBox=true, Glow=true, TeamColor=true, DistanceFade=true,
-        MaxDistance=2500, BoxColor=Color3.fromRGB(60,255,60), TextColor=Color3.fromRGB(255,255,255),
-        TracerColor=Color3.fromRGB(255,60,60), ChamsColor=Color3.fromRGB(255,80,80),
-        ChamsTransparency=0.35, ArrowColor=Color3.fromRGB(255,200,40),
+        Master = false, -- Включает/выключает всё ESP разом
+        Box = true, Name = true, Distance = true, Health = true, HealthBar = true,
+        Tracer = true, TracerOrigin = "Bottom", Arrow = false,
+        OffscreenArrow = true, GradientBox = true, Glow = true, TeamColor = true, DistanceFade = true,
+        MaxDistance = 5000,
+        BoxColor = Color3.fromRGB(60,255,60), TextColor = Color3.fromRGB(255,255,255),
+        TracerColor = Color3.fromRGB(255,60,60), ArrowColor = Color3.fromRGB(255,200,40),
     },
     FOVColor = Color3.fromRGB(120, 220, 140),
     Teleport = {
-        Target=nil, Offset=Vector3.new(0,0,3), Smooth=true, SmoothTime=0.25,
-        SafeLand=true, Behind=true, Cooldown=1.2,
+        Target = nil, Offset = Vector3.new(0,0,3), Smooth = true, SmoothTime = 0.25,
+        SafeLand = true, Behind = true, Cooldown = 1.2,
     },
-    Misc = { AntiFling=true, AntiVoid=true, NoClip=false },
+    Misc = { AntiFling = true, AntiVoid = true, NoClip = false },
 }
 
 -- ============ STATE ============
-local Running=true
-local Conns={}
-local ESPCache={}
-local HookActive=false
-local OldNamecall=nil
-local LastTP=0
-local Locked=nil
+local Running = true
+local Conns = {}
+local ESPCache = {}
+local HookActive = false
+local OldNamecall = nil
+local LastTP = 0
 
 -- Aim State
 local SilentTarget = nil
 local IsShooting = false
 local SilentActive = false
-local CachedTarget = nil
 
-local function log(...) print("[WT v6]", ...) end
+local function log(...) print("[WT v7]", ...) end
 local function addConn(c) table.insert(Conns,c) return c end
 local function now() return tick() end
 
@@ -60,7 +59,6 @@ local function now() return tick() end
 local function getChar(p) return p and p.Character end
 local function getHum(p) local c=getChar(p) return c and c:FindFirstChildOfClass("Humanoid") end
 local function getHRP(p) local c=getChar(p) return c and c:FindFirstChild("HumanoidRootPart") end
-local function getHead(p) local c=getChar(p) return c and c:FindFirstChild("Head") end
 
 local function isEnemy(p)
     if p==LP then return false end
@@ -71,13 +69,13 @@ local function isEnemy(p)
     return true
 end
 
--- ============ AIM LOGIC (MeowMod Strict FOV) ============
+-- ============ AIM LOGIC (Body Priority) ============
 local function GetFovRadiusPx()
     return (Camera.ViewportSize.Y / 2) * (Cfg.Aim.FOVPercent / 100)
 end
 
-local function IsStrictlyInFov(head)
-    local sp, on = Camera:WorldToViewportPoint(head.Position)
+local function IsStrictlyInFov(hrp)
+    local sp, on = Camera:WorldToViewportPoint(hrp.Position)
     if not on or sp.Z < 0 then return false, 0 end
     local screenCenter = Vector2.new(Camera.ViewportSize.X / 2, Camera.ViewportSize.Y / 2)
     local targetPos = Vector2.new(sp.X, sp.Y)
@@ -87,7 +85,6 @@ local function IsStrictlyInFov(head)
 end
 
 local function GetTarget()
-    if Locked and Locked.Parent and isEnemy(Locked) then return Locked end
     local myChar = LP.Character
     local myHrp = myChar and myChar:FindFirstChild("HumanoidRootPart")
     local myHum = myChar and myChar:FindFirstChildOfClass("Humanoid")
@@ -98,16 +95,19 @@ local function GetTarget()
     
     for _, p in pairs(Players:GetPlayers()) do
         if isEnemy(p) then
-            local head = getHead(p)
             local hrp = getHRP(p)
             local hum = getHum(p)
-            if head and hrp and hum then
-                local d3 = (myPos - head.Position).Magnitude
+            if hrp and hum then
+                local d3 = (myPos - hrp.Position).Magnitude
                 if d3 <= Cfg.Aim.MaxDistance then
-                    local inFov, distPx = IsStrictlyInFov(head)
+                    -- Проверяем FOV по корпусу (HRP), а не по голове
+                    local inFov, distPx = IsStrictlyInFov(hrp)
                     if inFov and distPx < bestDistPx then
                         bestDistPx = distPx
-                        best = head
+                        -- Приоритет: UpperTorso / Torso -> HRP
+                        best = p.Character:FindFirstChild("UpperTorso") 
+                            or p.Character:FindFirstChild("Torso") 
+                            or hrp
                     end
                 end
             end
@@ -130,7 +130,7 @@ addConn(UIS.InputEnded:Connect(function(inp, gp)
     end
 end))
 
--- Bypass / Hook (Raw Metatable)
+-- Bypass / Hook
 local function GetBypassOffset()
     return Vector3.new((math.random() - 0.5) * 0.1, (math.random() - 0.5) * 0.1, (math.random() - 0.5) * 0.1)
 end
@@ -210,10 +210,6 @@ local function teamColorOf(p)
 end
 
 local function mkEntry()
-    local skel = {}
-    for i = 1, 10 do
-        skel[i] = newD("Line", {Thickness=1, Color=Cfg.ESP.TextColor, Visible=false})
-    end
     return {
         box = newD("Square", {Thickness=1, Filled=false, Color=Cfg.ESP.BoxColor, Visible=false}),
         boxGlow = newD("Square", {Thickness=4, Filled=false, Color=Cfg.ESP.BoxColor, Transparency=0.7, Visible=false}),
@@ -225,24 +221,19 @@ local function mkEntry()
         tracer = newD("Line", {Thickness=1, Color=Cfg.ESP.TracerColor, Visible=false}),
         arrow = newD("Triangle", {Thickness=1, Filled=true, Color=Cfg.ESP.ArrowColor, Visible=false}),
         offArrow = newD("Triangle", {Thickness=1, Filled=true, Color=Cfg.ESP.ArrowColor, Visible=false}),
-        skeleton = skel,
     }
 end
 
 local function destroyEntry(e)
-    for k,d in pairs(e) do
-        if k=="skeleton" then for _,s in ipairs(d) do pcall(s.Remove,s) end
-        elseif typeof(d)=="Instance" and d.Remove then pcall(d.Remove,d) end
+    for _,d in pairs(e) do
+        if typeof(d)=="Instance" and d.Remove then pcall(d.Remove,d) end
     end
 end
 
 local function ensureEntry(p) ESPCache[p]=ESPCache[p] or mkEntry(); return ESPCache[p] end
 
 local function hideAll(e)
-    for k,d in pairs(e) do
-        if k=="skeleton" then for _,s in ipairs(d) do s.Visible=false end
-        else d.Visible=false end
-    end
+    for _,d in pairs(e) do d.Visible=false end
 end
 
 addConn(Players.PlayerRemoving:Connect(function(p)
@@ -250,35 +241,13 @@ addConn(Players.PlayerRemoving:Connect(function(p)
     if Cfg.Teleport.Target==p then Cfg.Teleport.Target=nil end
 end))
 
-local ChamsInstances={}
-local function setChams(p,on)
-    local c=getChar(p)
-    if not c then if ChamsInstances[p] then ChamsInstances[p]:Destroy(); ChamsInstances[p]=nil end return end
-    if on then
-        if not ChamsInstances[p] then
-            local h=Instance.new("Highlight")
-            h.Name="WTChams"; h.FillColor=Cfg.ESP.ChamsColor
-            h.FillTransparency=Cfg.ESP.ChamsTransparency
-            h.OutlineColor=Cfg.ESP.ChamsColor
-            h.DepthMode=Enum.HighlightDepthMode.AlwaysOnTop
-            h.Parent=c; ChamsInstances[p]=h
-        else
-            ChamsInstances[p].FillColor=Cfg.ESP.ChamsColor
-            ChamsInstances[p].FillTransparency=Cfg.ESP.ChamsTransparency
-        end
-    else
-        if ChamsInstances[p] then pcall(function() ChamsInstances[p]:Destroy() end); ChamsInstances[p]=nil end
-    end
-end
-
 -- ============ RENDER LOOP ============
 local function RenderLogic()
     if not Running then return end
     
     -- 1. AIM LOGIC
     if Cfg.Aim.Enabled and IsShooting then
-        CachedTarget = GetTarget()
-        SilentTarget = CachedTarget
+        SilentTarget = GetTarget()
         SilentActive = SilentTarget ~= nil
         
         if SilentActive then
@@ -306,9 +275,8 @@ local function RenderLogic()
     FovCircle.Visible = Cfg.Aim.Enabled and Cfg.Aim.ShowFOV
 
     -- 3. ESP LOGIC
-    if not Cfg.ESP.Enabled then
+    if not Cfg.ESP.Master then
         for _,e in pairs(ESPCache) do hideAll(e) end
-        for p in pairs(ChamsInstances) do setChams(p,false) end
         return
     end
     
@@ -318,7 +286,9 @@ local function RenderLogic()
         local c=getChar(p)
         local hrp=c and c:FindFirstChild("HumanoidRootPart")
         local hum=c and c:FindFirstChildOfClass("Humanoid")
-        if not hrp or not hum or hum.Health<=0 then hideAll(e); setChams(p,false) continue end
+        
+        if not hrp or not hum or hum.Health<=0 then hideAll(e) continue end
+        
         local sp,onScreen=Camera:WorldToViewportPoint(hrp.Position)
         local dist=(Camera.CFrame.Position-hrp.Position).Magnitude
         local inRange = dist<=Cfg.ESP.MaxDistance
@@ -385,36 +355,8 @@ local function RenderLogic()
                 e.arrow.PointC=Vector2.new(tx+6,ty-10)
             else e.arrow.Visible=false end
             e.offArrow.Visible=false
-
-            if Cfg.ESP.Skeleton and c then
-                local pairsList={
-                    {"Head","UpperTorso"},{"UpperTorso","LowerTorso"},
-                    {"UpperTorso","LeftUpperArm"},{"LeftUpperArm","LeftLowerArm"},
-                    {"UpperTorso","RightUpperArm"},{"RightUpperArm","RightLowerArm"},
-                    {"LowerTorso","LeftUpperLeg"},{"LeftUpperLeg","LeftLowerLeg"},
-                    {"LowerTorso","RightUpperLeg"},{"RightUpperLeg","RightLowerLeg"},
-                }
-                local segs={}
-                for _,pr in ipairs(pairsList) do
-                    local a=c:FindFirstChild(pr[1]); local b=c:FindFirstChild(pr[2])
-                    if a and b then
-                        local sa,onA=Camera:WorldToViewportPoint(a.Position)
-                        local sb,onB=Camera:WorldToViewportPoint(b.Position)
-                        if onA and onB then table.insert(segs,{Vector2.new(sa.X,sa.Y),Vector2.new(sb.X,sb.Y)}) end
-                    end
-                end
-                for i=1,10 do
-                    if i<=#segs then
-                        e.skeleton[i].From=segs[i][1]; e.skeleton[i].To=segs[i][2]
-                        e.skeleton[i].Color=boxColor; e.skeleton[i].Visible=true
-                    else e.skeleton[i].Visible=false end
-                end
-            else for _,s in ipairs(e.skeleton) do s.Visible=false end end
         else
-            for k,d in pairs(e) do
-                if k=="skeleton" then for _,s in ipairs(d) do s.Visible=false end
-                else d.Visible=false end
-            end
+            for _,d in pairs(e) do d.Visible=false end
             if Cfg.ESP.OffscreenArrow and inRange then
                 local dir3=(hrp.Position-Camera.CFrame.Position)
                 if dir3.Magnitude>0.01 then
@@ -438,45 +380,89 @@ local function RenderLogic()
                 end
             end
         end
-        if Cfg.ESP.Chams and Cfg.ESP.Enabled then setChams(p,true) else setChams(p,false) end
-    end
-    for p in pairs(ChamsInstances) do
-        if not Cfg.ESP.Enabled or not Cfg.ESP.Chams then setChams(p,false) end
     end
 end
 RunService:BindToRenderStep("WT_Render", Enum.RenderPriority.Camera.Value + 1, RenderLogic)
 
--- ============ TELEPORT ============
+-- ============ TELEPORT LOGIC (Base & Player Base) ============
+local function GetGroundY(pos)
+    local rp = RaycastParams.new()
+    rp.FilterDescendantsInstances = {LP.Character}
+    rp.FilterType = Enum.RaycastFilterType.Exclude
+    local ray = Ray.new(pos + Vector3.new(0, 500, 0), Vector3.new(0, -1000, 0))
+    local hit = Workspace:Raycast(ray.Origin, ray.Direction, rp)
+    if hit then return hit.Position.Y end
+    return nil
+end
+
 local function tpTo(pos, smooth)
     local hrp=getHRP(LP); if not hrp then return end
     if Cfg.Teleport.SafeLand then
-        local params=RaycastParams.new()
-        params.FilterType=Enum.RaycastFilterType.Exclude
-        params.FilterDescendantsInstances={LP.Character}
-        local r=Workspace:Raycast(pos+Vector3.new(0,10,0), Vector3.new(0,-200,0), params)
-        if r then pos = r.Position + Vector3.new(0,3,0) end
+        local gy = GetGroundY(pos)
+        if gy then pos = Vector3.new(pos.X, gy + 3.5, pos.Z) end
     end
     if smooth and Cfg.Teleport.Smooth then
-        local to=CFrame.new(pos+Vector3.new(0,3,0))
+        local to=CFrame.new(pos + Cfg.Teleport.Offset)
         local tween=TweenService:Create(hrp, TweenInfo.new(Cfg.Teleport.SmoothTime, Enum.EasingStyle.Quad, Enum.EasingDirection.Out), {CFrame=to})
         tween:Play()
     else
-        hrp.CFrame = CFrame.new(pos+Vector3.new(0,3,0))
+        hrp.CFrame = CFrame.new(pos + Cfg.Teleport.Offset)
     end
 end
 
-local function tpToPlayer(p)
-    if not p or not p.Character then return false end
+local function FindSpawn(teamCheck)
+    local myTeam = LP.Team and LP.Team.Name:lower() or ""
+    local myColor = LP.TeamColor and LP.TeamColor.Color or nil
+    local best, bestDist = nil, math.huge
+    local myHrp = getHRP(LP)
+    local myPos = myHrp and myHrp.Position or Vector3.zero
+    
+    for _, o in pairs(Workspace:GetDescendants()) do
+        if o:IsA("SpawnLocation") and o.Enabled then
+            local matches = false
+            if teamCheck then
+                if myColor and o.BrickColor.Color == myColor then matches = true end
+                if not matches and myTeam ~= "" then
+                    local path = o:GetFullName():lower()
+                    if path:find(myTeam) then matches = true end
+                end
+                if not matches and o.Neutral and myTeam == "" then matches = true end
+            else
+                matches = true
+            end
+            
+            if matches then
+                local d = (myPos - o.Position).Magnitude
+                if d < bestDist then bestDist = d; best = o.Position end
+            end
+        end
+    end
+    return best
+end
+
+local function TPToBase() -- Своя база
+    local pos = FindSpawn(true)
+    if pos then tpTo(pos, true) else log("Base not found") end
+end
+
+local function TPToPlayerBase(p) -- База выбранного игрока
+    if not p or not p.Team then return end
+    local targetColor = p.Team.TeamColor.Color
+    for _, o in pairs(Workspace:GetDescendants()) do
+        if o:IsA("SpawnLocation") and o.Enabled and o.BrickColor.Color == targetColor then
+            tpTo(o.Position, true); return
+        end
+    end
+end
+
+local function tpToPlayer(p) -- К игроку
+    if not p then return false end
+    local hrp = getHRP(p); if not hrp then return false end
     if now()-LastTP<Cfg.Teleport.Cooldown then return false end
     LastTP=now()
-    local hrp=p.Character:FindFirstChild("HumanoidRootPart")
-    if not hrp then return false end
-    local pos=hrp.Position
-    if Cfg.Teleport.Behind then
-        pos = pos - hrp.CFrame.LookVector * 3
-    end
+    local pos = hrp.Position
+    if Cfg.Teleport.Behind then pos = pos - hrp.CFrame.LookVector * 3 end
     tpTo(pos, true)
-    log("TP ->", p.Name)
     return true
 end
 
@@ -497,17 +483,7 @@ if Cfg.Misc.AntiVoid then
     end))
 end
 
-if Cfg.Misc.NoClip then
-    addConn(RunService.Stepped:Connect(function()
-        if not Running then return end
-        local c=LP.Character; if not c then return end
-        for _,v in ipairs(c:GetDescendants()) do
-            if v:IsA("BasePart") and v.CanCollide then v.CanCollide=false end
-        end
-    end))
-end
-
--- ============ UI ============
+-- ============ UI (Optimized) ============
 local oldGui=CoreGui:FindFirstChild("WarTycoonUI"); if oldGui then oldGui:Destroy() end
 local SG=Instance.new("ScreenGui"); SG.Name="WarTycoonUI"; SG.ResetOnSpawn=false
 SG.ZIndexBehavior=Enum.ZIndexBehavior.Sibling; SG.Parent=CoreGui
@@ -526,7 +502,7 @@ Instance.new("UICorner",TitleBar).CornerRadius=UDim.new(0,10)
 
 local TitleLbl=Instance.new("TextLabel")
 TitleLbl.Size=UDim2.new(1,-140,1,0); TitleLbl.Position=UDim2.fromOffset(14,0)
-TitleLbl.BackgroundTransparency=1; TitleLbl.Text="WarTycoon v6  |  ollie"
+TitleLbl.BackgroundTransparency=1; TitleLbl.Text="WarTycoon v7  |  ollie"
 TitleLbl.TextColor3=Color3.fromRGB(220,220,230); TitleLbl.Font=Enum.Font.GothamBold
 TitleLbl.TextSize=14; TitleLbl.TextXAlignment=Enum.TextXAlignment.Left; TitleLbl.Parent=TitleBar
 
@@ -547,7 +523,6 @@ local Content=Instance.new("Frame")
 Content.Size=UDim2.new(1,-20,1,-52); Content.Position=UDim2.fromOffset(10,46)
 Content.BackgroundTransparency=1; Content.Parent=Main
 
--- tabs
 local TabBar=Instance.new("Frame")
 TabBar.Size=UDim2.new(1,0,0,30); TabBar.BackgroundTransparency=1; TabBar.Parent=Content
 local function mkTab(text,x)
@@ -585,7 +560,6 @@ tTP.MouseButton1Click:Connect(function() selectTab("Teleport") end)
 tMisc.MouseButton1Click:Connect(function() selectTab("Misc") end)
 selectTab("Aim")
 
--- builders
 local function mkToggle(parent,label,get,set,x,y)
     local b=Instance.new("TextButton")
     b.Size=UDim2.fromOffset(184,26); b.Position=UDim2.fromOffset(x,y)
@@ -600,7 +574,6 @@ local function mkToggle(parent,label,get,set,x,y)
     return b
 end
 
--- FIXED SLIDER (Stops UI dragging when adjusting)
 local function mkSlider(parent,label,x,y,minV,maxV,get,set,isFloat)
     local holder=Instance.new("Frame"); holder.Size=UDim2.fromOffset(285,30)
     holder.Position=UDim2.fromOffset(x,y); holder.BackgroundTransparency=1; holder.Parent=parent
@@ -608,7 +581,6 @@ local function mkSlider(parent,label,x,y,minV,maxV,get,set,isFloat)
     lbl.BackgroundTransparency=1; lbl.TextColor3=Color3.fromRGB(220,220,230)
     lbl.Font=Enum.Font.Gotham; lbl.TextSize=11; lbl.TextXAlignment=Enum.TextXAlignment.Left
     lbl.Text=label..": "..tostring(get()); lbl.Parent=holder
-    
     local bar=Instance.new("Frame"); bar.Size=UDim2.new(1,0,0,7); bar.Position=UDim2.fromOffset(0,16)
     bar.BackgroundColor3=Color3.fromRGB(36,36,46); bar.BorderSizePixel=0; bar.Parent=holder
     Instance.new("UICorner",bar).CornerRadius=UDim.new(0,3)
@@ -616,7 +588,6 @@ local function mkSlider(parent,label,x,y,minV,maxV,get,set,isFloat)
     fill.BackgroundColor3=Color3.fromRGB(120,220,140); fill.BorderSizePixel=0; fill.Parent=bar
     Instance.new("UICorner",fill).CornerRadius=UDim.new(0,3)
     
-    -- Invisible hitbox over the slider to intercept touches and prevent window dragging
     local hit = Instance.new("TextButton")
     hit.Size = UDim2.new(1, 0, 4, 0); hit.Position = UDim2.new(0, 0, -1.5, 0)
     hit.BackgroundTransparency = 1; hit.Text = ""; hit.Parent = bar
@@ -624,14 +595,12 @@ local function mkSlider(parent,label,x,y,minV,maxV,get,set,isFloat)
     local drag=false
     hit.InputBegan:Connect(function(i) 
         if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then 
-            drag=true 
-            Main.Active = false -- disable dragging the main window while sliding
+            drag=true; Main.Active = false
         end 
     end)
     UIS.InputEnded:Connect(function(i) 
         if i.UserInputType==Enum.UserInputType.MouseButton1 or i.UserInputType==Enum.UserInputType.Touch then 
-            drag=false 
-            Main.Active = true  -- re-enable window dragging
+            drag=false; Main.Active = true
         end 
     end)
     UIS.InputChanged:Connect(function(i)
@@ -671,7 +640,7 @@ local function mkDropdown(parent,label,options,get,set,x,y)
     return btn
 end
 
--- AIM page (Stripped down to MeowMod essentials)
+-- AIM page
 local A=Pages.Aim
 mkToggle(A,"Silent Aim",function() return Cfg.Aim.Enabled end,function(v) Cfg.Aim.Enabled=v end,0,0)
 mkToggle(A,"Show FOV Ring",function() return Cfg.Aim.ShowFOV end,function(v) Cfg.Aim.ShowFOV=v end,192,0)
@@ -680,7 +649,7 @@ mkSlider(A,"Max Dist",0,90,500,5000,function() return Cfg.Aim.MaxDistance end,fu
 
 -- ESP page
 local E=Pages.ESP
-mkToggle(E,"ESP",function() return Cfg.ESP.Enabled end,function(v) Cfg.ESP.Enabled=v end,0,0)
+mkToggle(E,"MASTER ESP",function() return Cfg.ESP.Master end,function(v) Cfg.ESP.Master=v end,0,0)
 mkToggle(E,"Box",function() return Cfg.ESP.Box end,function(v) Cfg.ESP.Box=v end,192,0)
 mkToggle(E,"Gradient",function() return Cfg.ESP.GradientBox end,function(v) Cfg.ESP.GradientBox=v end,384,0)
 mkToggle(E,"Glow",function() return Cfg.ESP.Glow end,function(v) Cfg.ESP.Glow=v end,0,32)
@@ -688,13 +657,11 @@ mkToggle(E,"Name",function() return Cfg.ESP.Name end,function(v) Cfg.ESP.Name=v 
 mkToggle(E,"Distance",function() return Cfg.ESP.Distance end,function(v) Cfg.ESP.Distance=v end,384,32)
 mkToggle(E,"Health",function() return Cfg.ESP.Health end,function(v) Cfg.ESP.Health=v end,0,64)
 mkToggle(E,"HealthBar",function() return Cfg.ESP.HealthBar end,function(v) Cfg.ESP.HealthBar=v end,192,64)
-mkToggle(E,"Skeleton",function() return Cfg.ESP.Skeleton end,function(v) Cfg.ESP.Skeleton=v end,384,64)
-mkToggle(E,"Chams",function() return Cfg.ESP.Chams end,function(v) Cfg.ESP.Chams=v end,0,96)
-mkToggle(E,"Tracer",function() return Cfg.ESP.Tracer end,function(v) Cfg.ESP.Tracer=v end,192,96)
-mkToggle(E,"Arrow",function() return Cfg.ESP.Arrow end,function(v) Cfg.ESP.Arrow=v end,384,96)
-mkToggle(E,"Offscreen",function() return Cfg.ESP.OffscreenArrow end,function(v) Cfg.ESP.OffscreenArrow=v end,0,128)
-mkToggle(E,"Team Color",function() return Cfg.ESP.TeamColor end,function(v) Cfg.ESP.TeamColor=v end,192,128)
-mkToggle(E,"Dist Fade",function() return Cfg.ESP.DistanceFade end,function(v) Cfg.ESP.DistanceFade=v end,384,128)
+mkToggle(E,"Tracer",function() return Cfg.ESP.Tracer end,function(v) Cfg.ESP.Tracer=v end,384,64)
+mkToggle(E,"Arrow",function() return Cfg.ESP.Arrow end,function(v) Cfg.ESP.Arrow=v end,0,96)
+mkToggle(E,"Offscreen",function() return Cfg.ESP.OffscreenArrow end,function(v) Cfg.ESP.OffscreenArrow=v end,192,96)
+mkToggle(E,"Team Color",function() return Cfg.ESP.TeamColor end,function(v) Cfg.ESP.TeamColor=v end,384,96)
+mkToggle(E,"Dist Fade",function() return Cfg.ESP.DistanceFade end,function(v) Cfg.ESP.DistanceFade=v end,0,128)
 mkSlider(E,"Max Dist",0,162,200,5000,function() return Cfg.ESP.MaxDistance end,function(v) Cfg.ESP.MaxDistance=v end)
 mkDropdown(E,"Tracer Origin",{"Top","Bottom","Left","Right"},function() return Cfg.ESP.TracerOrigin end,function(v) Cfg.ESP.TracerOrigin=v end,0,200)
 
@@ -705,7 +672,7 @@ TpBtn.Size=UDim2.fromOffset(285,30); TpBtn.Position=UDim2.fromOffset(0,0)
 TpBtn.BackgroundColor3=Color3.fromRGB(50,80,130); TpBtn.TextColor3=Color3.fromRGB(230,230,240)
 TpBtn.Font=Enum.Font.GothamBold; TpBtn.TextSize=13; TpBtn.BorderSizePixel=0; TpBtn.Parent=T
 Instance.new("UICorner",TpBtn).CornerRadius=UDim.new(0,5)
-TpBtn.Text="Select Target"
+TpBtn.Text="Teleport To Any Player"
 
 local SearchBox=Instance.new("TextBox")
 SearchBox.Size=UDim2.fromOffset(285,26); SearchBox.Position=UDim2.fromOffset(0,36)
@@ -715,7 +682,7 @@ SearchBox.Font=Enum.Font.Gotham; SearchBox.TextSize=12; SearchBox.BorderSizePixe
 Instance.new("UICorner",SearchBox).CornerRadius=UDim.new(0,4)
 
 local TPdd=Instance.new("ScrollingFrame")
-TPdd.Size=UDim2.fromOffset(285,215); TPdd.Position=UDim2.fromOffset(0,68)
+TPdd.Size=UDim2.fromOffset(285,170); TPdd.Position=UDim2.fromOffset(0,68)
 TPdd.BackgroundColor3=Color3.fromRGB(22,22,28); TPdd.BorderSizePixel=0
 TPdd.ScrollBarThickness=4; TPdd.CanvasSize=UDim2.new(0,0,0,0)
 TPdd.AutomaticCanvasSize=Enum.AutomaticSize.Y; TPdd.Parent=T
@@ -754,16 +721,32 @@ SearchBox:GetPropertyChangedSignal("Text"):Connect(refreshTP)
 Players.PlayerAdded:Connect(function() task.wait(1) refreshTP() end)
 Players.PlayerRemoving:Connect(function() task.wait(0.1) refreshTP() end)
 
-mkToggle(T,"Smooth TP",function() return Cfg.Teleport.Smooth end,function(v) Cfg.Teleport.Smooth=v end,0,290)
-mkToggle(T,"Safe Land",function() return Cfg.Teleport.SafeLand end,function(v) Cfg.Teleport.SafeLand=v end,192,290)
-mkToggle(T,"Behind Target",function() return Cfg.Teleport.Behind end,function(v) Cfg.Teleport.Behind=v end,0,322)
-mkSlider(T,"Smooth Time",0,356,0.05,1,function() return Cfg.Teleport.SmoothTime end,function(v) Cfg.Teleport.SmoothTime=v end,true)
+-- Base TP buttons
+local BaseTpBtn = Instance.new("TextButton")
+BaseTpBtn.Size=UDim2.fromOffset(285,30); BaseTpBtn.Position=UDim2.fromOffset(0,246)
+BaseTpBtn.BackgroundColor3=Color3.fromRGB(40,120,60); BaseTpBtn.TextColor3=Color3.fromRGB(230,230,240)
+BaseTpBtn.Font=Enum.Font.GothamBold; BaseTpBtn.TextSize=13; BaseTpBtn.BorderSizePixel=0; BaseTpBtn.Parent=T
+Instance.new("UICorner",BaseTpBtn).CornerRadius=UDim.new(0,5)
+BaseTpBtn.Text="TP to My Base"
+BaseTpBtn.MouseButton1Click:Connect(TPToBase)
+
+local BaseTpSelBtn = Instance.new("TextButton")
+BaseTpSelBtn.Size=UDim2.fromOffset(285,30); BaseTpSelBtn.Position=UDim2.fromOffset(0,284)
+BaseTpSelBtn.BackgroundColor3=Color3.fromRGB(60,50,90); BaseTpSelBtn.TextColor3=Color3.fromRGB(230,230,240)
+BaseTpSelBtn.Font=Enum.Font.GothamBold; BaseTpSelBtn.TextSize=13; BaseTpSelBtn.BorderSizePixel=0; BaseTpSelBtn.Parent=T
+Instance.new("UICorner",BaseTpSelBtn).CornerRadius=UDim.new(0,5)
+BaseTpSelBtn.Text="TP to Selected Player's Base"
+BaseTpSelBtn.MouseButton1Click:Connect(function()
+    if Cfg.Teleport.Target then TPToPlayerBase(Cfg.Teleport.Target) end
+end)
+
+mkToggle(T,"Smooth TP",function() return Cfg.Teleport.Smooth end,function(v) Cfg.Teleport.Smooth=v end,0,322)
+mkToggle(T,"Safe Land",function() return Cfg.Teleport.SafeLand end,function(v) Cfg.Teleport.SafeLand=v end,192,322)
 
 -- MISC page
 local M=Pages.Misc
 mkToggle(M,"Anti Fling",function() return Cfg.Misc.AntiFling end,function(v) Cfg.Misc.AntiFling=v end,0,0)
 mkToggle(M,"Anti Void",function() return Cfg.Misc.AntiVoid end,function(v) Cfg.Misc.AntiVoid=v end,192,0)
-mkToggle(M,"NoClip",function() return Cfg.Misc.NoClip end,function(v) Cfg.Misc.NoClip=v end,384,0)
 
 -- UI buttons
 local minimized=false
@@ -781,7 +764,6 @@ local function unloadAll()
     RunService:UnbindFromRenderStep("WT_Render")
     for _,c in ipairs(Conns) do pcall(function() c:Disconnect() end) end
     for _,e in pairs(ESPCache) do destroyEntry(e) end
-    for p in pairs(ChamsInstances) do setChams(p,false) end
     SG:Destroy()
     log("unloaded")
 end
@@ -789,4 +771,4 @@ UnloadBtn.MouseButton1Click:Connect(unloadAll)
 CloseBtn.MouseButton1Click:Connect(function() pcall(unloadAll) end)
 
 installHook()
-log("WarTycoon v6 loaded")
+log("WarTycoon v7 loaded")
